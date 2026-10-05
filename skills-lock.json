@@ -37,6 +37,12 @@
       "skillPath": "skills/build-a-brand/SKILL.md",
       "computedHash": "0c6e16d94c7652e0eb8f6713eadfd1ff7b4aba522daf995c53bc655d1976ae79"
     },
+    "composio": {
+      "source": "ComposioHQ/composio",
+      "sourceType": "github",
+      "skillPath": "skills/composio/SKILL.md",
+      "computedHash": "60d7d3cf79e25c061030309af40eaa2a9de6df8f6b87977932996a9909232886"
+    },
     "content-director": {
       "source": "Pika-Labs/Pika-Plugins",
       "sourceType": "github",
