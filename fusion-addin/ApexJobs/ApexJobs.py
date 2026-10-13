@@ -1,39 +1,47 @@
 # Apex Jobs - Fusion 360 add-in.
-# Adds an "Apex Prints" panel to the Design > Solid tab with two buttons:
-#   Oscar Award        -> arch_award.build()   (from the arch-award-text skill)
-#   Baby Birth Letter  -> birth_letter.py on this PC (from the birth-letter skill)
-# Each button opens a dialog for the job info, then builds the design in a NEW document
-# and exports the STLs. Open designs are never touched.
+# One "Apex Orders" button on the Design > Solid tab opens a docked panel (palette/index.html):
+#   New order - pick Oscar Award or Baby Birth Letter, fill the form, add to queue or build now.
+#   Queue     - every order file in the orders folder (manual now, Shopify later). Build them,
+#               then review the screenshots and approve or reject.
+# Every build runs in a NEW document, exports STLs and saves review screenshots.
 
-import adsk.core, adsk.fusion, traceback, os, io, re, json, datetime, contextlib
+import adsk.core, adsk.fusion, traceback, os, io, re, json, base64, contextlib
 
 from . import arch_award
+from . import orders as O
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SETTINGS_FILE = os.path.join(HERE, 'settings.json')
 DEFAULT_SETTINGS = {
     'birth_letter_script': r'C:\Users\Mina\Desktop\Apex Prints\Products\Letters\Scripts\birth_letter.py',
+    'orders_folder': os.path.join(os.path.expanduser('~'), 'Documents', 'Apex Orders'),
+    'letter_overrides': {},     # letter -> {'LAYOUT': {...}, 'SIZE': {...}} saved on approve
 }
 
 PANEL_ID = 'ApexPrintsPanel'
-ARCH_CMD_ID = 'ApexOscarAwardCmd'
-BIRTH_CMD_ID = 'ApexBabyBirthLetterCmd'
+CMD_ID = 'ApexOrdersCmd'
+PALETTE_ID = 'ApexOrdersPalette'
 RUN_EVENT_ID = 'ApexJobsRunEvent'
 
-ANIMALS = ['elephant', 'lion', 'unicorn', 'bunny', 'rocking_horse']
-COLOURS = ['pink', 'blue']
-MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July',
-          'August', 'September', 'October', 'November', 'December']
+CHECKS = {
+    'arch': ['Spelling matches the order exactly',
+             'Text reads left-to-right in the top view (not mirrored)',
+             'Text wraps the curve in the iso view'],
+    'birth': ['Name read LETTER BY LETTER against the order (no dropped letters)',
+              'Time, date, weight and height match the order',
+              'Logo on the back reads left-to-right',
+              'Animal is one clean piece (no blobs between legs)'],
+}
 
 app = adsk.core.Application.get()
 ui = app.userInterface
 _handlers = []      # Fusion only keeps weak refs to handlers
-_run_event = None
+_birth_defaults = None
 
 
 # ----------------------------------------------------------------------------- settings
 def load_settings():
-    s = dict(DEFAULT_SETTINGS)
+    s = json.loads(json.dumps(DEFAULT_SETTINGS))
     try:
         with open(SETTINGS_FILE, encoding='utf-8') as f:
             s.update(json.load(f))
@@ -43,38 +51,76 @@ def load_settings():
 
 
 def save_settings(s):
-    try:
-        with open(SETTINGS_FILE, 'w', encoding='utf-8') as f:
-            json.dump(s, f, indent=2)
-    except OSError:
-        pass
+    with open(SETTINGS_FILE, 'w', encoding='utf-8') as f:
+        json.dump(s, f, indent=2, ensure_ascii=False)
 
 
-# ----------------------------------------------------------------------------- job runners
-def run_arch(order):
-    arch_award.build(order)
+def store():
+    return O.Store(load_settings()['orders_folder'])
 
 
-def run_birth_letter(order):
-    script = order.pop('_script')
-    if not os.path.isfile(script):
-        raise FileNotFoundError('birth_letter.py not found at:\n%s\n\nFix the path under '
-                                '"Advanced" in the Baby Birth Letter dialog.' % script)
-    g = {'__name__': 'birth_letter', '__file__': script}
-    with open(script, encoding='utf-8') as f:
-        exec(compile(f.read(), script, 'exec'), g)
-    g['CONFIG'].update(order)
-    g['run']('')
+# ----------------------------------------------------------------------------- birth_letter.py
+def load_birth_script(path):
+    if not os.path.isfile(path):
+        raise FileNotFoundError('birth_letter.py not found at %s' % path)
+    g = {'__name__': 'birth_letter', '__file__': path}
+    with open(path, encoding='utf-8') as f:
+        exec(compile(f.read(), path, 'exec'), g)
+    return g
 
 
-JOBS = {
-    'arch': ('Oscar Award', run_arch,
-             'Get the customer to approve the spelling from the screen before printing.'),
-    'birth': ('Baby Birth Letter', run_birth_letter,
-              'Read the NAME LETTER BY LETTER against the order (a dropped letter is the known '
-              'failure), check the logo on the back reads left-to-right, and get the customer to '
-              'approve spelling, time, date, weight and height before printing.'),
-}
+def _jsonable(d):
+    out = {}
+    for k, v in (d or {}).items():
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            out[k] = v
+        elif isinstance(v, (list, tuple)) and v and all(isinstance(x, (int, float)) for x in v):
+            out[k] = list(v)
+    return out
+
+
+def birth_defaults(reload=False):
+    """LAYOUT / SIZE defaults read from the real script, so the form always matches it."""
+    global _birth_defaults
+    if _birth_defaults is None or reload:
+        path = load_settings()['birth_letter_script']
+        try:
+            g = load_birth_script(path)
+            _birth_defaults = {'LAYOUT': _jsonable(g.get('LAYOUT')), 'SIZE': _jsonable(g.get('SIZE')),
+                               'error': None}
+        except Exception as e:
+            _birth_defaults = {'LAYOUT': {}, 'SIZE': {}, 'error': str(e)}
+    return _birth_defaults
+
+
+# ----------------------------------------------------------------------------- building
+def _shot(path, orientation=None):
+    vp = app.activeViewport
+    if orientation is not None:
+        cam = vp.camera
+        cam.viewOrientation = orientation
+        cam.isSmoothTransition = False
+        vp.camera = cam
+        vp.fit()
+    adsk.doEvents()
+    vp.saveAsImageFile(path, 1200, 800)
+    return os.path.basename(path)
+
+
+def screenshots(order):
+    d = store().media_dir(order['id'])
+    V = adsk.core.ViewOrientations
+    if order['type'] == 'arch':
+        views = [('top', V.TopViewOrientation), ('iso', V.IsoTopRightViewOrientation)]
+    else:   # the script leaves a 3/4 front view - keep that one first
+        views = [('three-quarter', None), ('front', V.FrontViewOrientation), ('back', V.BackViewOrientation)]
+    out = []
+    for name, ori in views:
+        try:
+            out.append(_shot(os.path.join(d, name + '.png'), ori))
+        except Exception:
+            pass
+    return out
 
 
 def stl_folder(output):
@@ -85,273 +131,241 @@ def stl_folder(output):
     return None
 
 
+def run_order(order):
+    cfg = O.build_config(order['type'], order['clean'])
+    if order['type'] == 'arch':
+        arch_award.build(cfg)
+        return
+    g = load_birth_script(load_settings()['birth_letter_script'])
+    g['CONFIG'].update(cfg)
+    for group in ('LAYOUT', 'SIZE'):
+        for k, v in (order.get('overrides') or {}).get(group, {}).items():
+            g[group][k] = tuple(v) if isinstance(v, list) else v
+    g['run']('')
+
+
+def _is_new_unsaved(doc, before):
+    try:
+        return doc is not None and doc != before and doc.dataFile is None
+    except Exception:
+        return False
+
+
+def build(oid, close_after):
+    st = store()
+    order = st.get(oid)
+    clean, ov, errors, warnings, _ = O.validate(order, birth_defaults())
+    if errors:
+        order.update(status='failed', result={'error': 'Order is invalid: ' + '; '.join(
+            '%s: %s' % kv for kv in errors.items())})
+        st.save(order); notify(order); return
+    order['clean'] = {k: v for k, v in clean.items() if not k.startswith('_')}   # fields stay as typed
+    order['overrides'] = ov
+    note = []
+    if order['type'] == 'birth' and not ov:
+        saved = load_settings()['letter_overrides'].get(clean['_letter'])
+        if saved:
+            order['overrides'] = saved
+            note.append('Used the saved layout for letter %s.' % clean['_letter'])
+    order['status'] = 'building'
+    st.save(order); notify(order)
+    adsk.doEvents()
+
+    before = app.activeDocument
+    buf = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(buf):
+            run_order(order)
+        out = buf.getvalue().strip()
+        shots = screenshots(order)
+        order['status'] = 'review'
+        order['result'] = {
+            'output': out, 'notes': note,
+            'warnings': warnings + [l for l in out.splitlines() if 'WARNING' in l.upper()],
+            'stl_folder': stl_folder(out), 'screenshots': shots,
+        }
+    except Exception as e:
+        order['status'] = 'failed'
+        order['result'] = {'error': str(e), 'output': buf.getvalue().strip(), 'notes': note,
+                           'trace': traceback.format_exc()}
+    if close_after and _is_new_unsaved(app.activeDocument, before):
+        try:
+            app.activeDocument.close(False)
+        except Exception:
+            pass
+    st.save(order); notify(order)
+
+
 class RunJobHandler(adsk.core.CustomEventHandler):
-    """Builds run here, outside the command, so the new document is not tied to
-    the command's transaction on whatever document was open."""
+    """Builds run from a custom event, outside any command, one per event, so the panel
+    stays responsive and each new document is independent."""
 
     def notify(self, args):
         try:
             data = json.loads(args.additionalInfo)
-            title, runner, check = JOBS[data['job']]
-            buf = io.StringIO()
-            try:
-                with contextlib.redirect_stdout(buf):
-                    runner(data['order'])
-            except Exception as e:
-                out = buf.getvalue().strip()
-                ui.messageBox('%s FAILED:\n\n%s\n\n%s\n\nClose the Untitled document it left open '
-                              '(do not save).' % (title, e, out), title)
-                return
-            out = buf.getvalue().strip()
-            warn = [l for l in out.splitlines() if 'WARNING' in l.upper()]
-            msg = '%s built.\n\n' % title
-            if data.get('non_latin'):
-                msg += ('!! Text is not Latin script - right-to-left shaping is untested. '
-                        'Check the design on screen very carefully.\n\n')
-            if warn:
-                msg += '!! WARNINGS:\n' + '\n'.join(warn) + '\n\n'
-            msg += out + '\n\nCHECK BEFORE PRINTING: ' + check
-            folder = stl_folder(out)
-            if folder and os.path.isdir(folder) and hasattr(os, 'startfile'):
-                msg += '\n\nOpen the STL folder now?'
-                r = ui.messageBox(msg, title, adsk.core.MessageBoxButtonTypes.YesNoButtonType)
-                if r == adsk.core.DialogResults.DialogYes:
-                    os.startfile(folder)
-            else:
-                ui.messageBox(msg, title)
+            build(data['id'], data.get('close_after', False))
         except Exception:
-            ui.messageBox('Apex Jobs error:\n' + traceback.format_exc())
+            ui.messageBox('Apex Jobs build error:\n' + traceback.format_exc())
 
 
-def fire(job, order, non_latin=False):
-    app.fireCustomEvent(RUN_EVENT_ID, json.dumps({'job': job, 'order': order, 'non_latin': non_latin}))
+# ----------------------------------------------------------------------------- panel messaging
+def palette():
+    return ui.palettes.itemById(PALETTE_ID)
 
 
-def is_non_latin(*texts):
-    return any(ord(ch) > 0x24F for t in texts for ch in t)
+def summary(o):
+    r = o.get('result') or {}
+    return {'id': o['id'], 'type': o.get('type'), 'status': o.get('status'), 'title': O.title(o),
+            'source': o.get('source', 'manual'), 'ref': o.get('ref') or {}, 'created': o.get('created'),
+            'updated': o.get('updated'), 'warnings': len(r.get('warnings') or []),
+            'error': r.get('error')}
 
 
-# ----------------------------------------------------------------------------- Oscar Award dialog
-class ArchCreated(adsk.core.CommandCreatedEventHandler):
-    def notify(self, args):
-        try:
-            cmd = args.command
-            cmd.okButtonText = 'Build'
-            ins = cmd.commandInputs
-            ins.addTextBoxCommandInput('info', '', '1-3 lines, top to bottom. Letters auto-shrink '
-                                       'to fit; over ~20 characters per line gets too small to '
-                                       'print well - split it.', 3, True)
-            ins.addStringValueInput('line1', 'Line 1 (top)', '')
-            ins.addStringValueInput('line2', 'Line 2', '')
-            ins.addStringValueInput('line3', 'Line 3', '')
-            ins.addStringValueInput('job', 'Job name (optional)', '')
-            ins.addTextBoxCommandInput('status', '', '', 2, True)
-            adv = ins.addGroupCommandInput('adv', 'Advanced (only if needed)')
-            adv.isExpanded = False
-            a = adv.children
-            a.addStringValueInput('font', 'Font', arch_award.CONFIG['font'])
-            a.addFloatSpinnerCommandInput('thick', 'Thickness (mm)', '', 0.8, 3.0, 0.1,
-                                          arch_award.CONFIG['thickness_mm'])
-            a.addFloatSpinnerCommandInput('raise', 'Text raise (mm)', '', 0.4, 2.0, 0.1,
-                                          arch_award.CONFIG['text_raise_mm'])
-            for h, cls in ((cmd.inputChanged, ArchChanged), (cmd.validateInputs, ArchValidate),
-                           (cmd.execute, ArchExecute)):
-                hd = cls(); h.add(hd); _handlers.append(hd)
-        except Exception:
-            ui.messageBox('Apex Jobs error:\n' + traceback.format_exc())
+def notify(order):
+    p = palette()
+    if p:
+        p.sendInfoToHTML('orderUpdated', json.dumps(summary(order)))
 
 
-def arch_lines(ins):
-    return [ins.itemById(k).value.strip() for k in ('line1', 'line2', 'line3')
-            if ins.itemById(k).value.strip()]
+def _img(path):
+    with open(path, 'rb') as f:
+        return 'data:image/png;base64,' + base64.b64encode(f.read()).decode('ascii')
 
 
-class ArchChanged(adsk.core.InputChangedEventHandler):
-    def notify(self, args):
-        ins = args.firingEvent.sender.commandInputs  # args.inputs is only the changed input's group
-        lines = arch_lines(ins)
-        notes = []
-        long_ = [l for l in lines if len(l) > 20]
-        if long_:
-            notes.append('Long line (%d chars) will shrink below ~4.5 mm.' % max(len(l) for l in long_))
-        if any(c in ''.join(lines) for c in "'.,`"):
-            notes.append('Punctuation prints as tiny islands - may look like blobs.')
-        if is_non_latin(*lines):
-            notes.append('Non-Latin text: untested, check the result carefully.')
-        ins.itemById('status').formattedText = '<b>' + ' '.join(notes) + '</b>' if notes else ''
-
-
-class ArchValidate(adsk.core.ValidateInputsEventHandler):
-    def notify(self, args):
-        args.areInputsValid = len(arch_lines(args.inputs)) >= 1
-
-
-class ArchExecute(adsk.core.CommandEventHandler):
-    def notify(self, args):
-        ins = args.command.commandInputs
-        lines = arch_lines(ins)
-        order = {
-            'lines': lines,
-            'job_name': ins.itemById('job').value.strip(),
-            'font': ins.itemById('font').value.strip() or arch_award.CONFIG['font'],
-            'thickness_mm': ins.itemById('thick').value,
-            'text_raise_mm': ins.itemById('raise').value,
-        }
-        fire('arch', order, is_non_latin(*lines))
-
-
-# ----------------------------------------------------------------------------- Baby Birth Letter dialog
-TIME_RE = re.compile(r'^([01]?\d|2[0-3]):[0-5]\d$')
-DATE_RE = re.compile(r'^(\d{1,2})\.(\d{1,2})\.(\d{4})$')
-
-
-def parse_date(s):
-    m = DATE_RE.match(s.strip())
-    if not m:
-        return None
-    try:
-        return datetime.date(int(m.group(3)), int(m.group(2)), int(m.group(1)))
-    except ValueError:
-        return None
-
-
-class BirthCreated(adsk.core.CommandCreatedEventHandler):
-    def notify(self, args):
-        try:
-            cmd = args.command
-            cmd.okButtonText = 'Build'
-            ins = cmd.commandInputs
-            ins.addStringValueInput('name', 'Baby name', '')
-            ins.addStringValueInput('time', 'Time (HH:MM)', '')
-            ins.addStringValueInput('date', 'Date (dd.mm.yyyy)', '')
-            ins.addIntegerSpinnerCommandInput('weight', 'Weight (g)', 500, 7000, 10, 3400)
-            ins.addFloatSpinnerCommandInput('height', 'Height (cm)', '', 30, 70, 0.5, 50)
-            dd = ins.addDropDownCommandInput('animal', 'Animal',
-                                             adsk.core.DropDownStyles.TextListDropDownStyle)
-            for i, a in enumerate(ANIMALS):
-                dd.listItems.add(a.replace('_', ' ').title(), i == 0)
-            dd = ins.addDropDownCommandInput('colour', 'Colour',
-                                             adsk.core.DropDownStyles.TextListDropDownStyle)
-            for i, c in enumerate(COLOURS):
-                dd.listItems.add(c.title(), i == 0)
-            ins.addTextBoxCommandInput('status', '', '', 3, True)
-            adv = ins.addGroupCommandInput('adv', 'Advanced (only if needed)')
-            adv.isExpanded = False
-            a = adv.children
-            a.addStringValueInput('letter', 'Letter (blank = first of name)', '')
-            a.addIntegerSpinnerCommandInput('lh', 'Letter height (mm)', 120, 245, 5, 180)
-            a.addFloatSpinnerCommandInput('overlap', 'Min overlap', '', 0.4, 1.0, 0.05, 0.6)
-            a.addStringValueInput('script', 'birth_letter.py path', load_settings()['birth_letter_script'])
-            for h, cls in ((cmd.inputChanged, BirthChanged), (cmd.validateInputs, BirthValidate),
-                           (cmd.execute, BirthExecute)):
-                hd = cls(); h.add(hd); _handlers.append(hd)
-        except Exception:
-            ui.messageBox('Apex Jobs error:\n' + traceback.format_exc())
-
-
-def birth_problems(ins):
-    p = []
-    if not ins.itemById('name').value.strip():
-        p.append('Enter the baby name.')
-    if not TIME_RE.match(ins.itemById('time').value.strip()):
-        p.append('Time must be HH:MM, 24-hour, no AM/PM.')
-    if not parse_date(ins.itemById('date').value):
-        p.append('Date must be a real date as dd.mm.yyyy.')
-    letter = ins.itemById('letter').value.strip()
-    if letter and len(letter) != 1:
-        p.append('Letter override must be one character.')
-    return p
-
-
-class BirthChanged(adsk.core.InputChangedEventHandler):
-    def notify(self, args):
-        ins = args.firingEvent.sender.commandInputs  # args.inputs is only the changed input's group
-        notes = []
-        d = parse_date(ins.itemById('date').value)
-        if d:
-            # Spell the date out so 01.12 vs 12.01 mix-ups are caught before building.
-            notes.append('Date reads as: <b>%d %s %d</b>' % (d.day, MONTHS[d.month - 1], d.year))
-        name = ins.itemById('name').value.strip()
-        letter = (ins.itemById('letter').value.strip() or name[:1]).upper()
-        if letter in 'IJLTFPY' and letter:
-            notes.append('<b>Narrow letter %s: not everything may fit - read the WARNING lines.</b>' % letter)
-        if ins.itemById('lh').value > 200:
-            notes.append('Over 200 mm tall: consider 25 mm thickness so it does not tip.')
-        if is_non_latin(name):
-            notes.append('<b>Non-Latin name: untested, check the result carefully.</b>')
-        notes += birth_problems(ins)
-        ins.itemById('status').formattedText = '<br>'.join(notes)
-
-
-class BirthValidate(adsk.core.ValidateInputsEventHandler):
-    def notify(self, args):
-        args.areInputsValid = not birth_problems(args.inputs)
-
-
-class BirthExecute(adsk.core.CommandEventHandler):
-    def notify(self, args):
-        ins = args.command.commandInputs
-        d = parse_date(ins.itemById('date').value)
-        h = ins.itemById('height').value
-        script = ins.itemById('script').value.strip()
-        order = {
-            'baby_name': ins.itemById('name').value.strip(),
-            'time': ins.itemById('time').value.strip(),
-            'date': '%02d.%02d.%04d' % (d.day, d.month, d.year),
-            'weight': '%d g' % ins.itemById('weight').value,
-            'height': ('%g cm' % round(h, 1)),
-            'animal': ANIMALS[ins.itemById('animal').selectedItem.index],
-            'colour': COLOURS[ins.itemById('colour').selectedItem.index],
-            '_script': script,
-        }
-        # Only send overrides that differ from the script defaults.
-        if ins.itemById('letter').value.strip():
-            order['letter'] = ins.itemById('letter').value.strip().upper()
-        if ins.itemById('lh').value != 180:
-            order['letter_height_mm'] = ins.itemById('lh').value
-        if abs(ins.itemById('overlap').value - 0.6) > 1e-6:
-            order['min_overlap'] = ins.itemById('overlap').value
-        s = load_settings()
-        if script and script != s['birth_letter_script']:
-            s['birth_letter_script'] = script
+def handle(action, data):
+    st = store()
+    s = load_settings()
+    if action == 'init':
+        bd = birth_defaults()
+        return {'settings': {k: s[k] for k in ('birth_letter_script', 'orders_folder')},
+                'animals': O.ANIMALS, 'colours': O.COLOURS, 'birthLimits': O.BIRTH_LIMITS,
+                'archDefaults': O.ARCH_DEFAULTS, 'birthDefaults': bd,
+                'savedLetters': sorted(s['letter_overrides']),
+                'orders': [summary(o) for o in st.all()]}
+    if action == 'validate':
+        clean, ov, errors, warnings, info = O.validate(data, birth_defaults())
+        return {'errors': errors, 'warnings': warnings, 'info': info, 'letter': clean.get('_letter')}
+    if action == 'letterOverrides':
+        return {'overrides': s['letter_overrides'].get(str(data.get('letter', '')).upper())}
+    if action == 'save':
+        order = {k: data[k] for k in ('type', 'fields', 'overrides', 'notes') if k in data}
+        if data.get('id'):     # editing an existing order keeps its id, source and Shopify ref
+            old = st.get(data['id'])
+            order = dict(old, **order)
+            order.pop('result', None)
+        _, _, errors, _, _ = O.validate(order, birth_defaults())
+        if errors:
+            return {'errors': errors}
+        order['status'] = 'pending'
+        order = st.save(order)
+        if data.get('buildNow'):
+            app.fireCustomEvent(RUN_EVENT_ID, json.dumps({'id': order['id'], 'close_after': False}))
+        return {'order': summary(order)}
+    if action == 'build':
+        for oid in data['ids']:
+            app.fireCustomEvent(RUN_EVENT_ID, json.dumps({'id': oid, 'close_after': data.get('closeAfter')}))
+        return {}
+    if action == 'list':
+        return {'orders': [summary(o) for o in st.all()]}
+    if action == 'get':
+        o = st.get(data['id'])
+        r = o.get('result') or {}
+        d = os.path.join(st.root, o['id'])
+        r['images'] = [{'name': n, 'src': _img(os.path.join(d, n))}
+                       for n in r.get('screenshots') or [] if os.path.isfile(os.path.join(d, n))]
+        o['result'] = r
+        o['checks'] = CHECKS[o['type']]
+        return {'order': o}
+    if action == 'setStatus':
+        o = st.get(data['id'])
+        o['status'] = data['status']
+        if data['status'] == 'approved' and o['type'] == 'birth' and o.get('overrides'):
+            letter = (o['clean'].get('letter') or o['clean']['baby_name'][:1]).upper()
+            s['letter_overrides'][letter] = o['overrides']
             save_settings(s)
-        fire('birth', order, is_non_latin(order['baby_name']))
+        st.save(o)
+        return {'order': summary(o)}
+    if action == 'delete':
+        st.delete(data['id'])
+        return {}
+    if action == 'openFolder':
+        o = st.get(data['id'])
+        folder = (o.get('result') or {}).get('stl_folder') or st.root
+        if os.path.isdir(folder) and hasattr(os, 'startfile'):
+            os.startfile(folder)
+        return {'folder': folder}
+    if action == 'saveSettings':
+        for k in ('birth_letter_script', 'orders_folder'):
+            if data.get(k):
+                s[k] = data[k].strip()
+        save_settings(s)
+        return {'birthDefaults': birth_defaults(reload=True)}
+    raise ValueError('Unknown action %s' % action)
+
+
+class FromHTML(adsk.core.HTMLEventHandler):
+    def notify(self, args):
+        try:
+            data = json.loads(args.data) if args.data else {}
+            args.returnData = json.dumps({'ok': True, **(handle(args.action, data) or {})})
+        except Exception as e:
+            args.returnData = json.dumps({'ok': False, 'error': str(e), 'trace': traceback.format_exc()})
+
+
+def show_palette():
+    p = palette()
+    if not p:
+        url = os.path.join(HERE, 'palette', 'index.html').replace('\\', '/')
+        p = ui.palettes.add(PALETTE_ID, 'Apex Orders', url, True, True, True, 480, 820, True)
+        p.dockingState = adsk.core.PaletteDockingStates.PaletteDockStateRight
+        h = FromHTML(); p.incomingFromHTML.add(h); _handlers.append(h)
+    p.isVisible = True
+
+
+class OpenExecute(adsk.core.CommandEventHandler):
+    def notify(self, args):
+        try:
+            show_palette()
+        except Exception:
+            ui.messageBox('Apex Jobs error:\n' + traceback.format_exc())
+
+
+class OpenCreated(adsk.core.CommandCreatedEventHandler):
+    def notify(self, args):
+        h = OpenExecute(); args.command.execute.add(h); _handlers.append(h)
 
 
 # ----------------------------------------------------------------------------- add-in lifecycle
 def _solid_tab():
-    ws = ui.workspaces.itemById('FusionSolidEnvironment')
-    return ws.toolbarTabs.itemById('SolidTab')
+    return ui.workspaces.itemById('FusionSolidEnvironment').toolbarTabs.itemById('SolidTab')
 
 
 def run(context):
-    global _run_event
     try:
-        _run_event = app.registerCustomEvent(RUN_EVENT_ID)
-        h = RunJobHandler(); _run_event.add(h); _handlers.append(h)
-
+        ev = app.registerCustomEvent(RUN_EVENT_ID)
+        h = RunJobHandler(); ev.add(h); _handlers.append(h)
+        tab = _solid_tab()
+        panel = tab.toolbarPanels.itemById(PANEL_ID) or tab.toolbarPanels.add(PANEL_ID, 'Apex Prints')
         defs = ui.commandDefinitions
-        panel = _solid_tab().toolbarPanels.itemById(PANEL_ID) or \
-            _solid_tab().toolbarPanels.add(PANEL_ID, 'Apex Prints')
-        for cid, name, tip, cls in (
-                (ARCH_CMD_ID, 'Oscar Award', 'Curved arch award with custom text (ARCH + TEXT STLs)', ArchCreated),
-                (BIRTH_CMD_ID, 'Baby Birth Letter', 'Birth-stats letter with inserts (LETTER + inserts STLs)', BirthCreated)):
-            cd = defs.itemById(cid) or defs.addButtonDefinition(cid, name, tip)
-            hd = cls(); cd.commandCreated.add(hd); _handlers.append(hd)
-            if not panel.controls.itemById(cid):
-                panel.controls.addCommand(cd).isPromoted = True
+        cd = defs.itemById(CMD_ID) or defs.addButtonDefinition(
+            CMD_ID, 'Apex Orders', 'Oscar Award and Baby Birth Letter orders: fill in, build, review',
+            os.path.join(HERE, 'resources'))
+        h = OpenCreated(); cd.commandCreated.add(h); _handlers.append(h)
+        if not panel.controls.itemById(CMD_ID):
+            panel.controls.addCommand(cd).isPromoted = True
     except Exception:
         ui.messageBox('Apex Jobs failed to start:\n' + traceback.format_exc())
 
 
 def stop(context):
     try:
+        if palette():
+            palette().deleteMe()
         panel = _solid_tab().toolbarPanels.itemById(PANEL_ID)
-        for cid in (ARCH_CMD_ID, BIRTH_CMD_ID):
-            if panel and panel.controls.itemById(cid):
-                panel.controls.itemById(cid).deleteMe()
-            if ui.commandDefinitions.itemById(cid):
-                ui.commandDefinitions.itemById(cid).deleteMe()
+        if panel and panel.controls.itemById(CMD_ID):
+            panel.controls.itemById(CMD_ID).deleteMe()
+        if ui.commandDefinitions.itemById(CMD_ID):
+            ui.commandDefinitions.itemById(CMD_ID).deleteMe()
         if panel:
             panel.deleteMe()
         app.unregisterCustomEvent(RUN_EVENT_ID)

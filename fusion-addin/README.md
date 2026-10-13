@@ -1,24 +1,38 @@
-# Apex Jobs: Fusion 360 add-in
+# Apex Orders: Fusion 360 add-in
 
-Adds an **Apex Prints** panel to Fusion's Design > **Solid** tab with two buttons:
+An **Apex Orders** button on Fusion's Design > **Solid** tab opens a panel docked on the right side of Fusion.
 
-| Button | Asks for | Builds |
-|---|---|---|
-| **Oscar Award** | 1-3 text lines, optional job name (Advanced: font, thickness, text raise) | Curved arch in a new document. Exports ARCH + TEXT STLs to `Downloads\Apex Arch Jobs\<job>\` |
-| **Baby Birth Letter** | Name, time, date, weight, height, animal, colour (Advanced: letter, letter height, min overlap, script path) | Birth-stats letter in a new document. Runs `birth_letter.py` from your Scripts folder and exports its STLs to `Downloads\Apex Birth Letters\...` |
+**New order**: choose **Oscar Award** or **Baby Birth Letter** and fill in the form.
+- Oscar Award shows a live preview of the gold band with your text and the estimated letter height
+  (amber when it's borderline, red when the build would refuse it). It also counts characters per line.
+- Baby Birth Letter takes the name, time, date, weight, height, colour and animal. It spells the date out
+  ("1 December 2021") so day and month can't get swapped. Use **Layout overrides** to move or resize inserts. The
+  spots and sizes are read from your own `birth_letter.py`, so the form always matches the script.
+- **Add to queue** saves the order. **Build now** saves it and builds it straight away.
 
-Each build opens a **new** document, so your open designs are never changed. When a build finishes, a box shows every WARNING line, the sizes and grams, and what to check before printing. It can also open the STL folder for you.
+**Queue**: lists every order: *To build*, *To review*, *Approved*.
+- **Build** / **Build all**. Each build runs in a new document (your open designs are never changed), exports the STLs
+  and takes review screenshots (top and iso for the arch; three-quarter, front and back for the letter).
+  "Close each document after building" keeps a big batch from leaving 20 tabs open.
+- **Review** shows the screenshots, every WARNING line and the order details, plus a checklist (name letter by
+  letter, logo reads left-to-right, and so on). **Approve** stays disabled until every box is ticked.
+- When you approve a birth letter with layout overrides, the overrides are **saved for that letter**. The next letter-I order
+  uses them automatically.
 
 ## Install (one time)
 1. Copy the `ApexJobs` folder somewhere permanent, e.g. `C:\Users\Mina\Desktop\Apex Prints\Add-ins\ApexJobs`.
-2. In Fusion: **Utilities > Add-Ins > Scripts and Add-Ins** (Shift+S), open the **Add-Ins** tab, click the green **+**, and choose the `ApexJobs` folder.
+2. In Fusion: **Utilities > Add-Ins > Scripts and Add-Ins** (Shift+S), open the **Add-Ins** tab, click the green **+** and choose the `ApexJobs` folder.
 3. Select **ApexJobs**, click **Run**, and tick **Run on Startup**.
-4. The **Apex Prints** panel appears at the right end of the Solid tab.
+4. Click **Apex Orders** in the **Apex Prints** panel on the Solid tab.
 
-## Notes
-- **Oscar Award** has the script built in (`arch_award.py`, copied from the arch-award-text skill).
-- **Baby Birth Letter** runs your existing `birth_letter.py` (plus `svgpoly.py` and `pylib\`) from
-  `C:\Users\Mina\Desktop\Apex Prints\Products\Letters\Scripts`. If you move it, change the path under Advanced. The add-in remembers the new path in `settings.json`.
-- The date is spelled out in the dialog ("1 December 2021") so you can catch day/month mix-ups before building.
-- If a build fails it leaves an Untitled document open. Close it without saving.
-- Nobody checks the screenshots any more. Read the name letter by letter and check the logo on the back yourself.
+## Shopify later
+Every order is a JSON file in the orders folder (default `Documents\Apex Orders`). The form is just one way of
+writing them. A Shopify agent only has to write the same files with `"source": "shopify"`. See
+[ApexJobs/ORDER_FORMAT.md](ApexJobs/ORDER_FORMAT.md).
+
+## Files
+- `ApexJobs.py`: the Fusion side: toolbar button, panel, build queue, screenshots.
+- `orders.py`: order validation and storage (no Fusion code, so a Shopify agent can reuse it).
+- `arch_award.py`: the arch script from the arch-award-text skill.
+- `palette/`: the panel UI (HTML/CSS/JS).
+- The birth letter runs your existing `birth_letter.py` (+ `svgpoly.py`, `pylib\`). Its path is in Settings.
