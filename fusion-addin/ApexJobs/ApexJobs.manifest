@@ -1,0 +1,13 @@
+{
+  "autodeskProduct": "Fusion",
+  "type": "addin",
+  "id": "bf59dcfd-cad5-425c-b7d2-dd2860feb0a4",
+  "author": "Apex Prints",
+  "description": {
+    "": "Apex Prints jobs: Oscar Award arch and Baby Birth Letter, built from a dialog."
+  },
+  "version": "1.0.0",
+  "runOnStartup": true,
+  "supportedOS": "windows|mac",
+  "editEnabled": true
+}
