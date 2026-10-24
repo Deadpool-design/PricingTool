@@ -8,11 +8,11 @@ const $$ = (s, el = document) => [...el.querySelectorAll(s)];
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
 const ICONS = {
-  arch: '<svg viewBox="0 0 48 32"><path d="M6 28 A20 20 0 0 1 42 28" fill="none" stroke="currentColor" stroke-width="5" stroke-linecap="round"/></svg>',
+  award: '<svg viewBox="0 0 48 32"><rect x="6" y="4" width="36" height="24" rx="3" fill="none" stroke="currentColor" stroke-width="3.6"/><path d="M13 21 h22" stroke="currentColor" stroke-width="3.4" stroke-linecap="round"/></svg>',
   birth: '<svg viewBox="0 0 48 32"><path d="M13 29 L24 3 L35 29 M17.5 19 H30.5" fill="none" stroke="currentColor" stroke-width="5" stroke-linejoin="round" stroke-linecap="round"/></svg>',
 };
 const STATUS_LABEL = { pending: 'To build', building: 'Building…', review: 'To review', approved: 'Approved', rejected: 'Rejected', failed: 'Failed' };
-const TYPE_LABEL = { arch: 'Oscar Award', birth: 'Baby Birth Letter' };
+const TYPE_LABEL = { award: 'Oscar Award', birth: 'Baby Birth Letter' };
 
 const state = {
   boot: null, type: null, editingId: null, touched: new Set(), submitted: false,
@@ -59,7 +59,7 @@ function pickType(type) {
   state.type = type;
   state.touched.clear(); state.submitted = false;
   $$('.pick').forEach(p => { p.classList.toggle('selected', p.dataset.type === type); p.setAttribute('aria-checked', p.dataset.type === type); });
-  $('#form-arch').hidden = type !== 'arch';
+  $('#form-award').hidden = type !== 'award';
   $('#form-birth').hidden = type !== 'birth';
   $('#empty-pick').hidden = !!type;
   $('#form-actions').hidden = !type;
@@ -68,14 +68,14 @@ function pickType(type) {
 
 /* ---------------------------------------------------------------- collect */
 function collect() {
-  if (state.type === 'arch') {
-    const f = $('#form-arch');
+  if (state.type === 'award') {
+    const f = $('#form-award');
     return {
-      type: 'arch',
+      type: 'award',
       fields: {
         lines: $$('[data-line]', f).map(i => i.value),
-        job_name: f.elements.job_name.value, font: f.elements.font.value,
-        thickness_mm: f.elements.thickness_mm.value, text_raise_mm: f.elements.text_raise_mm.value,
+        job_name: f.elements.job_name.value,
+        small_h_mm: f.elements.small_h_mm.value, name_h_mm: f.elements.name_h_mm.value,
       },
     };
   }
@@ -119,7 +119,7 @@ async function validate() {
 }
 
 function renderFeedback(r) {
-  const form = state.type === 'arch' ? $('#form-arch') : $('#form-birth');
+  const form = state.type === 'award' ? $('#form-award') : $('#form-birth');
   $$('.field', form).forEach(f => { f.classList.remove('has-error'); $('.err-msg', f)?.remove(); });
   for (const [k, msg] of Object.entries(state.errors)) {
     const field = $(`.field[data-field="${k}"]`, form);
@@ -139,44 +139,79 @@ function renderFeedback(r) {
 
 /* ---------------------------------------------------------------- previews */
 const measureCtx = document.createElement('canvas').getContext('2d');
-function textWidthMm(text, hMm) {
-  measureCtx.font = `bold 100px Arial, Helvetica, sans-serif`;
-  return measureCtx.measureText(text).width / 100 * hMm;
+// award-text plaque rules (Script A): Fusion text height = capital height; lines fit 46 mm;
+// small lines Franklin Gothic Medium Cond 5.1 mm, the name (last line) Demi Cond up to 6.45 mm,
+// switching to Medium Cond below 6 mm; block fits 27 mm with 3.6 mm gaps; under 4 mm is refused.
+const PLAQUE = { w: 50, h: 34, maxLen: 46, gap: 3.6, vMargin: 3.5, minH: 4.0, nameMinH: 6.0, capRatio: 0.7 };
+const FONT_SMALL = '"Franklin Gothic Medium Cond", "Arial Narrow", sans-serif';
+const FONT_NAME = '"Franklin Gothic Demi Cond", "Arial Narrow", sans-serif';
+function textWidthMm(text, hMm, font, weight) {
+  measureCtx.font = `${weight} 100px ${font}`;
+  return measureCtx.measureText(text).width / 100 * (hMm / PLAQUE.capRatio);
 }
 
-// Same fit rule as arch_award.py. Fusion measures the real text, so this is an estimate.
-function archFit(lines) {
-  const W = 35, maxH = 7, maxLen = 56, margin = 3, pitchF = 1.75;
-  let h = maxH;
-  const wmax = Math.max(...lines.map(l => textWidthMm(l, h)));
-  if (wmax > maxLen) h = h * maxLen / wmax * 0.98;
-  const hfit = (W - 2 * margin) / (lines.length * pitchF - (pitchF - 1));
-  return Math.min(h, hfit);
+// Same fit rule as award_text.py. Fusion measures the real glyphs, so this is an estimate.
+function plaqueFit(lines, smallH, nameH) {
+  const n = lines.length;
+  const out = lines.map((s, i) => {
+    const isName = i === n - 1;
+    let font = isName ? FONT_NAME : FONT_SMALL, weight = isName ? 700 : 500;
+    const hmax = isName ? nameH : smallH;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const w = textWidthMm(s, hmax, font, weight);
+      let h = w <= PLAQUE.maxLen ? hmax : hmax * PLAQUE.maxLen / w;
+      if (isName && n > 1 && font === FONT_NAME && h < PLAQUE.nameMinH && attempt === 0) { font = FONT_SMALL; weight = 500; continue; }
+      return { text: s, h: Math.floor(h * 20) / 20, font, weight, light: isName && font === FONT_SMALL };
+    }
+  });
+  const usable = PLAQUE.h - 2 * PLAQUE.vMargin;
+  let block = out.reduce((a, l) => a + l.h, 0) + PLAQUE.gap * (n - 1);
+  if (block > usable) {
+    const k = (usable - PLAQUE.gap * (n - 1)) / out.reduce((a, l) => a + l.h, 0);
+    out.forEach(l => { l.h = Math.floor(l.h * k * 20) / 20; });
+    block = out.reduce((a, l) => a + l.h, 0) + PLAQUE.gap * (n - 1);
+  }
+  return { lines: out, block };
 }
 
 function renderPreview() {
-  if (state.type === 'arch') {
-    const lines = $$('#form-arch [data-line]').map(i => i.value.trim()).filter(Boolean);
-    $$('#form-arch [data-line]').forEach(i => {
+  if (state.type === 'award') {
+    const f = $('#form-award');
+    const inputs = $$('[data-line]', f);
+    const filled = inputs.filter(i => i.value.trim());
+    const nameInput = filled[filled.length - 1];
+    inputs.forEach(i => {
+      const isName = i === nameInput && filled.length > 1;
       const c = i.parentElement.querySelector('.counter');
-      const n = i.value.trim().length;
-      c.textContent = n ? `${n}/20` : '';
-      c.classList.toggle('over', n > 20);
+      const n = i.value.trim().length, fit = isName || filled.length === 1 ? 11 : 14;
+      c.textContent = n ? `${n}/${fit}` : '';
+      c.classList.toggle('over', n > fit);
+      i.closest('.field').querySelector('.tag').hidden = !(i === nameInput);
     });
-    const g = $('#arch-text');
-    const size = $('#arch-size');
+    const g = $('#plaque-text');
+    const size = $('#plaque-size');
+    const lines = filled.map(i => i.value.trim());
     if (!lines.length) {
-      g.innerHTML = `<text x="41.15" y="17.5" font-size="5" fill="rgba(0,0,0,.28)">Your text here</text>`;
-      size.textContent = ''; size.className = 'pill'; size.hidden = true;
+      g.innerHTML = `<text x="25" y="18.6" font-size="5" fill="rgba(0,0,0,.3)" style="font-family:${esc(FONT_NAME)}">Winner name</text>`;
+      size.hidden = true;
       return;
     }
-    const h = archFit(lines), pitch = h * 1.75, n = lines.length;
-    g.innerHTML = lines.map((l, i) =>
-      `<text x="41.15" y="${(17.5 + (i - (n - 1) / 2) * pitch).toFixed(2)}" font-size="${h.toFixed(2)}">${esc(l)}</text>`).join('');
+    const num = (el, d) => { const v = parseFloat(String(el.value).replace(',', '.')); return v > 0 ? v : d; };
+    const fit = plaqueFit(lines, num(f.elements.small_h_mm, 5.1), num(f.elements.name_h_mm, 6.45));
+    let y = PLAQUE.h / 2 - fit.block / 2;
+    g.innerHTML = fit.lines.map(l => {
+      y += l.h;
+      const t = `<text x="25" y="${y.toFixed(2)}" font-size="${(l.h / PLAQUE.capRatio).toFixed(2)}" style="font-family:${esc(l.font)};font-weight:${l.weight}">${esc(l.text)}</text>`;
+      y += PLAQUE.gap;
+      return t;
+    }).join('');
+    const minH = Math.min(...fit.lines.map(l => l.h));
+    const nameH = fit.lines[fit.lines.length - 1].h;
     size.hidden = false;
-    size.textContent = `≈ ${h.toFixed(1)} mm letters`;
-    size.className = 'pill' + (h < 3.5 ? ' err' : h < 4.5 ? ' warn' : '');
-    size.title = h < 3.5 ? 'Too small - the build will refuse this. Shorten or split.' : h < 4.5 ? 'Borderline for a 0.4 mm nozzle' : '';
+    size.textContent = minH < PLAQUE.minH ? `≈ ${minH.toFixed(1)} mm · too small` : `≈ name ${nameH.toFixed(1)} mm`;
+    size.className = 'pill' + (minH < PLAQUE.minH ? ' err' : fit.lines.some(l => l.light) ? ' warn' : '');
+    size.title = minH < PLAQUE.minH ? 'The build will refuse letters under 4 mm. Shorten a line or move a word.'
+      : fit.lines.some(l => l.light) ? 'The name shrinks under 6 mm, so it switches to the lighter font.' : '';
     return;
   }
   if (state.type === 'birth') {
@@ -296,7 +331,7 @@ async function submit(buildNow) {
 }
 
 function resetForm() {
-  $('#form-arch').reset(); $('#form-birth').reset();
+  $('#form-award').reset(); $('#form-birth').reset();
   state.birth = { colour: null, animal: null };
   $$('.swatch, .chip').forEach(el => el.classList.remove('selected'));
   fillOverrides(null);
@@ -315,11 +350,11 @@ async function editOrder(id) {
   $('#editing-banner').hidden = false;
   $('#editing-title').textContent = TYPE_LABEL[order.type] + ' · ' + (order.ref?.shopify_order ? 'Shopify ' + order.ref.shopify_order : 'manual');
   const f = order.fields || {};
-  if (order.type === 'arch') {
+  if (order.type === 'award') {
     const lines = Array.isArray(f.lines) ? f.lines : String(f.lines || '').split('\n');
-    $$('#form-arch [data-line]').forEach((i, n) => i.value = lines[n] || '');
-    const fa = $('#form-arch');
-    ['job_name', 'font', 'thickness_mm', 'text_raise_mm'].forEach(k => fa.elements[k].value = f[k] ?? '');
+    $$('#form-award [data-line]').forEach((i, n) => i.value = lines[n] || '');
+    const fa = $('#form-award');
+    ['job_name', 'small_h_mm', 'name_h_mm'].forEach(k => fa.elements[k].value = f[k] ?? '');
   } else {
     const fb = $('#form-birth');
     ['baby_name', 'time', 'date', 'letter', 'letter_height_mm', 'letter_thickness_mm', 'min_overlap'].forEach(k => fb.elements[k].value = f[k] ?? '');
@@ -450,14 +485,14 @@ async function openDetail(id) {
   state.detail = order;
   const r = order.result || {};
   const sheet = $('#sheet-detail');
-  $('#d-title').textContent = TYPE_LABEL[order.type] + ' · ' + (order.type === 'arch'
+  $('#d-title').textContent = TYPE_LABEL[order.type] + ' · ' + (order.type === 'award'
     ? (order.fields.lines || []).filter(Boolean).join(' / ') : order.fields.baby_name);
   $('#d-meta').textContent = (order.source === 'shopify' ? `Shopify ${order.ref?.shopify_order || ''}${order.ref?.customer ? ' · ' + order.ref.customer : ''}` : 'Manual order') + ' · ' + ago(order.updated);
   const st = $('#d-status'); st.className = 'status ' + order.status; st.textContent = STATUS_LABEL[order.status];
 
   const f = order.clean || order.fields;
-  const spec = order.type === 'arch'
-    ? [['Lines', (f.lines || []).filter(Boolean).map(esc).join('<br>')], ['Job', esc(f.job_name || '—')]]
+  const spec = order.type === 'award'
+    ? [['Lines', (f.lines || []).filter(Boolean).map(esc).join('<br>')], ['Name', esc((f.lines || []).filter(Boolean).slice(-1)[0] || '')], ['Job', esc(f.job_name || '—')]]
     : [['Name', esc(f.baby_name)], ['Time', esc(f.time)], ['Date', esc(f.date)],
        ['Weight', esc(f.weight_g ? f.weight_g + ' g' : f.weight)], ['Height', esc(f.height_cm ? f.height_cm + ' cm' : f.height)],
        ['Animal', esc(cap(f.animal || ''))], ['Colour', esc(cap(f.colour || ''))]];
@@ -550,7 +585,7 @@ async function saveSettings() {
 function wire() {
   $$('.tab').forEach(t => t.onclick = () => showView(t.dataset.view));
   $$('.pick').forEach(p => p.onclick = () => { if (state.type !== p.dataset.type) pickType(p.dataset.type); });
-  for (const form of [$('#form-arch'), $('#form-birth')]) {
+  for (const form of [$('#form-award'), $('#form-birth')]) {
     form.addEventListener('submit', e => e.preventDefault());
     form.addEventListener('input', e => {
       const t = e.target;

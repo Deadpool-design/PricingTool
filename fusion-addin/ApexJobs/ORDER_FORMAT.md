@@ -11,22 +11,26 @@ Rules for anything that writes orders:
 - Don't fix customer typos. Copy what the customer typed. The panel validates at build time, and a
   bad order shows up as **Failed** with the reason, for you to edit.
 
-## Oscar Award
+## Oscar Award (plaque, award-text skill)
 
 ```json
 {
-  "type": "arch",
+  "type": "award",
   "status": "pending",
   "source": "shopify",
   "ref": { "shopify_order": "#1042", "line_item": "1234567890", "customer": "Sara M." },
   "notes": "Gift wrap",
   "fields": {
-    "lines": ["Sept Winners", "Team Farah"],
+    "lines": ["Sep 26 Winners", "Team", "Farah Helmy"],
     "job_name": ""
   }
 }
 ```
-Optional fields: `font`, `thickness_mm` (0.8–3), `text_raise_mm` (0.4–2).
+1-3 lines, top to bottom. The **last line is the winner's name** and prints biggest. Lines fit 46 mm:
+about 14 characters for the small lines, about 11 for the name. Longer lines shrink, and a build that needs
+letters under 4 mm is refused. Arabic or other right-to-left text is refused (it needs the manual Inkscape route).
+Optional fields: `small_h_mm` (4-6.5, default 5.1), `name_h_mm` (4-8, default 6.45).
+Older files with `"type": "arch"` are read as `award`.
 
 ## Baby Birth Letter
 

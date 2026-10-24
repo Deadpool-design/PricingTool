@@ -5,9 +5,9 @@
 #               then review the screenshots and approve or reject.
 # Every build runs in a NEW document, exports STLs and saves review screenshots.
 
-import adsk.core, adsk.fusion, traceback, os, io, re, json, base64, contextlib
+import adsk.core, adsk.fusion, traceback, os, io, re, json, base64, contextlib, threading
 
-from . import arch_award
+from . import award_text
 from . import orders as O
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -22,11 +22,15 @@ PANEL_ID = 'ApexPrintsPanel'
 CMD_ID = 'ApexOrdersCmd'
 PALETTE_ID = 'ApexOrdersPalette'
 RUN_EVENT_ID = 'ApexJobsRunEvent'
+OPEN_EVENT_ID = 'ApexJobsOpenPanelEvent'
+# The desktop shortcut (tools/open-apex-orders.ps1) drops this file to ask for the panel.
+OPEN_FLAG = os.path.join(HERE, 'open-panel.flag')
 
 CHECKS = {
-    'arch': ['Spelling matches the order exactly',
-             'Text reads left-to-right in the top view (not mirrored)',
-             'Text wraps the curve in the iso view'],
+    'award': ['Spelling matches the order exactly (customer approves from the screenshot)',
+              'Every line reads correctly and nothing touches the plaque edge',
+              'No WARNING about a letter hole under 0.95 mm (or it was fixed)',
+              'Name is on the LAST line, biggest'],
     'birth': ['Name read LETTER BY LETTER against the order (no dropped letters)',
               'Time, date, weight and height match the order',
               'Logo on the back reads left-to-right',
@@ -110,8 +114,8 @@ def _shot(path, orientation=None):
 def screenshots(order):
     d = store().media_dir(order['id'])
     V = adsk.core.ViewOrientations
-    if order['type'] == 'arch':
-        views = [('top', V.TopViewOrientation), ('iso', V.IsoTopRightViewOrientation)]
+    if order['type'] == 'award':   # the script leaves the camera on the plaque mounted on the base
+        views = [('on-base', None), ('front', V.FrontViewOrientation)]
     else:   # the script leaves a 3/4 front view - keep that one first
         views = [('three-quarter', None), ('front', V.FrontViewOrientation), ('back', V.BackViewOrientation)]
     out = []
@@ -133,8 +137,8 @@ def stl_folder(output):
 
 def run_order(order):
     cfg = O.build_config(order['type'], order['clean'])
-    if order['type'] == 'arch':
-        arch_award.build(cfg)
+    if order['type'] == 'award':
+        award_text.build(cfg)
         return
     g = load_birth_script(load_settings()['birth_letter_script'])
     g['CONFIG'].update(cfg)
@@ -239,7 +243,7 @@ def handle(action, data):
         bd = birth_defaults()
         return {'settings': {k: s[k] for k in ('birth_letter_script', 'orders_folder')},
                 'animals': O.ANIMALS, 'colours': O.COLOURS, 'birthLimits': O.BIRTH_LIMITS,
-                'archDefaults': O.ARCH_DEFAULTS, 'birthDefaults': bd,
+                'awardDefaults': O.AWARD_DEFAULTS, 'birthDefaults': bd,
                 'savedLetters': sorted(s['letter_overrides']),
                 'orders': [summary(o) for o in st.all()]}
     if action == 'validate':
@@ -335,6 +339,29 @@ class OpenCreated(adsk.core.CommandCreatedEventHandler):
         h = OpenExecute(); args.command.execute.add(h); _handlers.append(h)
 
 
+# ----------------------------------------------------------------------------- desktop shortcut
+class OpenPanelHandler(adsk.core.CustomEventHandler):
+    def notify(self, args):
+        try:
+            show_palette()
+        except Exception:
+            ui.messageBox('Apex Jobs error:\n' + traceback.format_exc())
+
+
+_stop_watch = threading.Event()
+
+
+def _watch_flag():
+    """Background thread: the shortcut drops OPEN_FLAG; only fireCustomEvent is safe off the main thread."""
+    while not _stop_watch.wait(1.0):
+        if os.path.exists(OPEN_FLAG):
+            try:
+                os.remove(OPEN_FLAG)
+            except OSError:
+                continue
+            app.fireCustomEvent(OPEN_EVENT_ID, '')
+
+
 # ----------------------------------------------------------------------------- add-in lifecycle
 def _solid_tab():
     return ui.workspaces.itemById('FusionSolidEnvironment').toolbarTabs.itemById('SolidTab')
@@ -344,6 +371,10 @@ def run(context):
     try:
         ev = app.registerCustomEvent(RUN_EVENT_ID)
         h = RunJobHandler(); ev.add(h); _handlers.append(h)
+        ev = app.registerCustomEvent(OPEN_EVENT_ID)
+        h = OpenPanelHandler(); ev.add(h); _handlers.append(h)
+        _stop_watch.clear()
+        threading.Thread(target=_watch_flag, daemon=True).start()
         tab = _solid_tab()
         panel = tab.toolbarPanels.itemById(PANEL_ID) or tab.toolbarPanels.add(PANEL_ID, 'Apex Prints')
         defs = ui.commandDefinitions
@@ -358,6 +389,7 @@ def run(context):
 
 
 def stop(context):
+    _stop_watch.set()
     try:
         if palette():
             palette().deleteMe()
@@ -369,5 +401,6 @@ def stop(context):
         if panel:
             panel.deleteMe()
         app.unregisterCustomEvent(RUN_EVENT_ID)
+        app.unregisterCustomEvent(OPEN_EVENT_ID)
     except Exception:
         ui.messageBox('Apex Jobs failed to stop:\n' + traceback.format_exc())

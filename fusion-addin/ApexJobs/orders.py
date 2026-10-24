@@ -4,7 +4,7 @@
 
 import os, re, json, uuid, datetime
 
-TYPES = ('arch', 'birth')
+TYPES = ('award', 'birth')
 STATUSES = ('pending', 'building', 'review', 'approved', 'rejected', 'failed')
 
 ANIMALS = ['elephant', 'lion', 'unicorn', 'bunny', 'rocking_horse']
@@ -14,7 +14,7 @@ NARROW_LETTERS = 'IJLTFPY'
 MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July',
           'August', 'September', 'October', 'November', 'December']
 
-ARCH_DEFAULTS = {'font': 'Arial', 'thickness_mm': 1.2, 'text_raise_mm': 0.8}
+AWARD_DEFAULTS = {'small_h_mm': 5.1, 'name_h_mm': 6.45}
 BIRTH_LIMITS = {  # optional numeric fields: (min, max, default shown in the form)
     'letter_height_mm': (100, 245, 180),
     'letter_thickness_mm': (10, 40, 20),
@@ -39,27 +39,47 @@ def _num(v):
     return float(m.group(1).replace(',', '.')), m.group(2).lower()
 
 
-# ----------------------------------------------------------------------------- arch
-def validate_arch(f):
+# ----------------------------------------------------------------------------- award (Oscar plaque)
+# Rules from the award-text skill: 1-3 lines, the LAST line is the winner's name (printed biggest).
+# Lines fit a 46 mm width: ~14 characters at 5.1 mm (small lines), ~11 at 6.45 mm (name); longer lines
+# shrink, and the script refuses anything that would need letters under 4 mm.
+SMALL_FIT_CHARS, NAME_FIT_CHARS, MAX_CHARS = 14, 11, 18
+RTL = re.compile('[\u0590-\u08ff\ufb1d-\ufdff\ufe70-\ufeff]')   # Hebrew / Arabic
+
+
+def normalize_type(t):
+    return 'award' if t in ('award', 'arch', 'oscar') else t   # 'arch' = order files from before the plaque
+
+
+def validate_award(f):
     errors, warnings, info = {}, [], []
     raw = f.get('lines') or []
     if isinstance(raw, str):
         raw = raw.splitlines()
     lines = [str(l).strip() for l in raw if str(l).strip()]
     if not lines:
-        errors['lines'] = 'Enter at least one line.'
+        errors['lines'] = 'Enter at least one line (the last line is the winner name).'
     elif len(lines) > 3:
         errors['lines'] = 'Maximum 3 lines.'
-    for l in lines:
-        if len(l) > 20:
-            warnings.append('"%s" is %d characters - letters will shrink below ~4.5 mm. '
-                            'Consider splitting it.' % (l, len(l)))
+    if lines and RTL.search(''.join(lines)):
+        errors['lines'] = ('Arabic / right-to-left text cannot be built here: Fusion reverses it and breaks the letter '
+                           'joins. Use the manual Inkscape SVG route from the award-text skill.')
+    for i, l in enumerate(lines):
+        is_name = i == len(lines) - 1 and len(lines) > 1
+        fit = NAME_FIT_CHARS if is_name else SMALL_FIT_CHARS
+        if len(l) > MAX_CHARS:
+            warnings.append('"%s" is %d characters - it will probably need letters under 4 mm and be refused. '
+                            'Move a word to another line.' % (l, len(l)))
+        elif len(l) > fit:
+            warnings.append('"%s" is %d characters - it will shrink below the standard %s size.%s'
+                            % (l, len(l), '6.45 mm name' if is_name else '5.1 mm',
+                               ' Under 6 mm the name switches to the lighter font.' if is_name else ''))
     if any(c in ''.join(lines) for c in "'.,`"):
-        warnings.append('Punctuation prints as tiny islands that can look like blobs.')
-    if is_non_latin(*lines):
-        warnings.append('Non-Latin text: right-to-left shaping is untested. Check the screenshots carefully.')
+        warnings.append('Punctuation prints as tiny islands - check them on the first print.')
+    if lines and not errors.get('lines') and is_non_latin(*lines):
+        warnings.append('Non-Latin letters: check the screenshots carefully.')
     clean = {'lines': lines, 'job_name': str(f.get('job_name') or '').strip()}
-    for k, lo, hi in (('thickness_mm', 0.8, 3.0), ('text_raise_mm', 0.4, 2.0)):
+    for k, lo, hi in (('small_h_mm', 4.0, 6.5), ('name_h_mm', 4.0, 8.0)):
         v = f.get(k)
         if v in (None, ''):
             continue
@@ -69,8 +89,6 @@ def validate_arch(f):
             errors[k] = 'Must be %g-%g mm.' % (lo, hi)
         else:
             clean[k] = n
-    if str(f.get('font') or '').strip():
-        clean['font'] = str(f['font']).strip()
     return clean, errors, warnings, info
 
 
@@ -226,10 +244,11 @@ def clean_overrides(ov, known=None):
 
 def validate(order, known=None):
     """Returns (clean_fields, overrides, errors, warnings, info)."""
-    if order.get('type') == 'arch':
-        f, e, w, i = validate_arch(order.get('fields') or {})
+    otype = normalize_type(order.get('type'))
+    if otype == 'award':
+        f, e, w, i = validate_award(order.get('fields') or {})
         return f, {}, e, w, i
-    if order.get('type') == 'birth':
+    if otype == 'birth':
         f, e, w, i, ov = validate_birth(order.get('fields') or {}, order.get('overrides'), known)
         return f, ov, e, w, i
     return {}, {}, {'type': 'Unknown order type.'}, [], []
@@ -237,7 +256,7 @@ def validate(order, known=None):
 
 def title(order):
     f = order.get('fields') or {}
-    if order.get('type') == 'arch':
+    if normalize_type(order.get('type')) == 'award':
         raw = f.get('lines') or []
         raw = raw.splitlines() if isinstance(raw, str) else raw
         return ' / '.join(str(l).strip() for l in raw if str(l).strip()) or 'Oscar Award'
@@ -246,9 +265,9 @@ def title(order):
 
 def build_config(otype, f):
     """Validated fields -> the CONFIG keys each script expects."""
-    if otype == 'arch':
+    if normalize_type(otype) == 'award':
         cfg = {'lines': f['lines'], 'job_name': f.get('job_name', '')}
-        for k in ('font', 'thickness_mm', 'text_raise_mm'):
+        for k in ('small_h_mm', 'name_h_mm'):
             if k in f:
                 cfg[k] = f[k]
         return cfg
@@ -299,6 +318,7 @@ class Store:
         with open(self.path(oid), encoding='utf-8') as fh:
             o = json.load(fh)
         o['id'] = oid   # file name wins, so a hand-written file cannot point elsewhere
+        o['type'] = normalize_type(o.get('type'))
         return o
 
     def all(self):
