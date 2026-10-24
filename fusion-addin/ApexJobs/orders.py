@@ -266,7 +266,8 @@ def title(order):
 def build_config(otype, f):
     """Validated fields -> the CONFIG keys each script expects."""
     if normalize_type(otype) == 'award':
-        cfg = {'lines': f['lines'], 'job_name': f.get('job_name', '')}
+        # preview_on_base off: Script A only builds the plaque + letters, no base model (base is printed to stock)
+        cfg = {'lines': f['lines'], 'job_name': f.get('job_name', ''), 'preview_on_base': False}
         for k in ('small_h_mm', 'name_h_mm'):
             if k in f:
                 cfg[k] = f[k]

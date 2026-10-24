@@ -5,7 +5,10 @@ already open) and the Apex Orders panel opens on the right. The same panel is al
 **Apex Prints > Apex Orders**.
 
 **New order**: choose **Oscar Award** or **Baby Birth Letter** and fill in the form.
-- **Oscar Award** builds the 50 x 34 mm plaque from the **award-text** skill (the curved arch is retired). Type 1-3 lines;
+- **Oscar Award** runs **Script A only** from the **award-text** skill: the 50 x 34 mm plaque, no base (the base is
+  printed to stock; Script B is not in the app, and Script A's base preview is switched off). It saves two separate
+  STLs, **PLAQUE** and **TEXT**, so Bambu Studio can give them different colours; the review screen has an
+  **Open both in Bambu Studio** button. Type 1-3 lines;
   the **last line is the winner's name** and prints biggest. A live preview shows the plaque with the estimated name
   size (amber when the name switches to the lighter font, red when the build would refuse letters under 4 mm).
   Arabic and other right-to-left text is blocked, because Fusion reverses it; use the skill's manual Inkscape route.
@@ -16,7 +19,7 @@ already open) and the Apex Orders panel opens on the right. The same panel is al
 
 **Queue**: lists every order: *To build*, *To review*, *Approved*.
 - **Build** / **Build all**. Each build runs in a new document (your open designs are never changed), exports the STLs
-  and takes review screenshots (plaque on the base + front for the award; three-quarter, front and back for the letter).
+  and takes review screenshots (top + iso of the plaque for the award; three-quarter, front and back for the letter).
   "Close each document after building" keeps a big batch from leaving 20 tabs open.
 - **Review** shows the screenshots, every WARNING line and the order details, plus a checklist. **Approve** stays
   disabled until every box is ticked.

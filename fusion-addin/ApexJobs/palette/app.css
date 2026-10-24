@@ -279,3 +279,10 @@ pre.log { background: #1f1e1c; color: #e8e4dc; border-radius: 8px; padding: 10px
 .toast.err { background: var(--err); }
 .toast.ok { background: var(--ok); }
 @keyframes pop { from { transform: translateY(8px); opacity: 0; } }
+
+/* ---------- STL files on the review sheet ---------- */
+.files .file { display: grid; grid-template-columns: 58px 1fr auto; gap: 8px; align-items: center; padding: 6px 0; border-bottom: 1px solid var(--line); }
+.files .file:last-of-type { border-bottom: 0; }
+.flabel { font-size: 11px; font-weight: 800; letter-spacing: .4px; color: var(--accent); }
+.fname { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fhint { font-size: 11px; color: var(--muted); white-space: nowrap; }

@@ -114,8 +114,8 @@ def _shot(path, orientation=None):
 def screenshots(order):
     d = store().media_dir(order['id'])
     V = adsk.core.ViewOrientations
-    if order['type'] == 'award':   # the script leaves the camera on the plaque mounted on the base
-        views = [('on-base', None), ('front', V.FrontViewOrientation)]
+    if order['type'] == 'award':   # plaque lies flat, front face up (+Z): top view shows the text straight on
+        views = [('top', V.TopViewOrientation), ('iso', V.IsoTopRightViewOrientation)]
     else:   # the script leaves a 3/4 front view - keep that one first
         views = [('three-quarter', None), ('front', V.FrontViewOrientation), ('back', V.BackViewOrientation)]
     out = []
@@ -127,12 +127,33 @@ def screenshots(order):
     return out
 
 
-def stl_folder(output):
+def stl_files(output):
+    """[(label, path)] from the script's 'PLAQUE STL: ...' / 'TEXT STL: ...' style lines."""
+    out = []
     for line in output.splitlines():
-        m = re.search(r'([A-Za-z]:\\.*?\.stl|/.*?\.stl)\s*$', line, re.I)
+        m = re.match(r'^\s*([A-Z ]+?) STL:\s*(.+?\.stl)\s*$', line, re.I)
         if m:
-            return os.path.dirname(m.group(1))
-    return None
+            out.append((m.group(1).strip().upper(), m.group(2)))
+    return out
+
+
+def stl_folder(output):
+    files = stl_files(output)
+    return os.path.dirname(files[0][1]) if files else None
+
+
+BAMBU_PATHS = [r'C:\Program Files\Bambu Studio\bambu-studio.exe',
+               r'C:\Program Files (x86)\Bambu Studio\bambu-studio.exe',
+               os.path.join(os.environ.get('LOCALAPPDATA', ''), 'Programs', 'Bambu Studio', 'bambu-studio.exe')]
+
+
+def open_in_bambu(paths):
+    exe = next((p for p in BAMBU_PATHS if os.path.isfile(p)), None)
+    if not exe:
+        return False
+    import subprocess
+    subprocess.Popen([exe] + list(paths), close_fds=True)
+    return True
 
 
 def run_order(order):
@@ -186,7 +207,7 @@ def build(oid, close_after):
         order['result'] = {
             'output': out, 'notes': note,
             'warnings': warnings + [l for l in out.splitlines() if 'WARNING' in l.upper()],
-            'stl_folder': stl_folder(out), 'screenshots': shots,
+            'stl_folder': stl_folder(out), 'stls': stl_files(out), 'screenshots': shots,
         }
     except Exception as e:
         order['status'] = 'failed'
@@ -298,6 +319,17 @@ def handle(action, data):
         if os.path.isdir(folder) and hasattr(os, 'startfile'):
             os.startfile(folder)
         return {'folder': folder}
+    if action == 'openBambu':
+        o = st.get(data['id'])
+        files = [p for _, p in (o.get('result') or {}).get('stls') or [] if os.path.isfile(p)]
+        if not files:
+            raise FileNotFoundError('The STL files for this order are missing - build it again.')
+        if open_in_bambu(files):
+            return {'opened': 'bambu'}
+        folder = os.path.dirname(files[0])
+        if hasattr(os, 'startfile'):
+            os.startfile(folder)
+        return {'opened': 'folder', 'folder': folder}
     if action == 'saveSettings':
         for k in ('birth_letter_script', 'orders_folder'):
             if data.get(k):

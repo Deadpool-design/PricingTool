@@ -510,6 +510,16 @@ async function openDetail(id) {
   html += `<div class="feedback" style="margin-bottom:10px">${
     (r.notes || []).map(m => `<div class="msg info"><b>ℹ</b><span>${esc(m)}</span></div>`).join('')}${
     (r.warnings || []).map(m => `<div class="msg warn"><b>!</b><span>${esc(m)}</span></div>`).join('')}</div>`;
+  const stls = r.stls || [];
+  if (stls.length) {
+    const hint = { PLAQUE: 'filament 1 · gold', TEXT: 'filament 2 · black' };
+    html += `<section class="card files"><h3>Files <span class="hint">separate STLs, one per colour</span></h3>${
+      stls.map(([label, p]) => `<div class="file"><span class="flabel">${esc(label)}</span><span class="fname" title="${esc(p)}">${
+        esc(p.split(/[\\/]/).pop())}</span>${hint[label] ? `<span class="fhint">${hint[label]}</span>` : ''}</div>`).join('')}
+      <button class="btn primary small" data-a="bambu" style="margin-top:10px;width:100%">Open both in Bambu Studio</button>
+      ${order.type === 'award' ? '<p class="muted small" style="margin:8px 0 0">When Bambu asks, answer <b>Yes</b> to "load as a single object with multiple parts", then set PLAQUE and TEXT to different filaments. If they load as two objects: select both, right-click, Assemble.</p>' : ''}
+    </section>`;
+  }
   html += `<section class="card"><h3>Order</h3><dl class="kv">${spec.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('')}</dl>${
     order.notes ? `<p class="muted small" style="margin:8px 0 0">${esc(order.notes)}</p>` : ''}</section>`;
   if (order.status === 'review') {
@@ -538,13 +548,17 @@ async function openDetail(id) {
   } else if (order.status === 'approved') {
     acts.innerHTML = `<button class="btn ghost" data-a="reopen">Back to review</button><button class="btn primary" data-a="folder">Open STL folder</button>`;
   } else acts.innerHTML = '';
-  $$('[data-a]', acts).forEach(b => b.onclick = () => detailAction(b.dataset.a, order));
+  $$('[data-a]', $('#sheet-detail')).forEach(b => b.onclick = () => detailAction(b.dataset.a, order));
   sheet.hidden = false;
 }
 
 async function detailAction(a, order) {
   try {
     if (a === 'folder') return void await call('openFolder', { id: order.id });
+    if (a === 'bambu') {
+      const r = await call('openBambu', { id: order.id });
+      return void toast(r.opened === 'bambu' ? 'Opening in Bambu Studio…' : 'Bambu Studio not found - opened the STL folder instead');
+    }
     if (a === 'edit') { closeSheets(); return void await editOrder(order.id); }
     if (a === 'build') { await call('build', { ids: [order.id], closeAfter: false }); markBuilding([order.id]); closeSheets(); return; }
     const status = { approve: 'approved', reject: 'rejected', reopen: 'review' }[a];
