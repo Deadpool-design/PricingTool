@@ -518,7 +518,7 @@ async function openDetail(id) {
     html += `<section class="card files"><h3>Files <span class="hint">separate STLs, one per colour</span></h3>${
       stls.map(([label, p]) => `<div class="file"><span class="flabel">${esc(label)}</span><span class="fname" title="${esc(p)}">${
         esc(p.split(/[\\/]/).pop())}</span>${hint[label] ? `<span class="fhint">${hint[label]}</span>` : ''}</div>`).join('')}
-      ${r.approved_folder ? `<p class="saved small">Saved for printing in <b title="${esc(r.approved_folder)}">${esc(r.approved_folder)}</b></p>` : order.type === 'award' ? '<p class="muted small" style="margin:8px 0 0">Approve copies both files into your Sutherland\\Oscar folder.</p>' : ''}
+      ${r.approved_folder ? `<p class="saved small">Saved for printing in <b title="${esc(r.approved_folder)}">${esc(r.approved_folder)}</b></p>` : order.type === 'award' ? '<p class="muted small" style="margin:8px 0 0">Approve moves both files into your Sutherland\\Oscar folder (the Downloads copy is deleted).</p>' : ''}
       <button class="btn primary small" data-a="bambu" style="margin-top:10px;width:100%">Open both in Bambu Studio</button>
       ${order.type === 'award' ? '<p class="muted small" style="margin:8px 0 0">When Bambu asks, answer <b>Yes</b> to "load as a single object with multiple parts", then set PLAQUE and TEXT to different filaments. If they load as two objects: select both, right-click, Assemble.</p>' : ''}
     </section>`;
@@ -567,6 +567,7 @@ async function detailAction(a, order) {
     const status = { approve: 'approved', reject: 'rejected', reopen: 'review' }[a];
     const r = await call('setStatus', { id: order.id, status });
     upsert(r.order);
+    if (r.note) toast(r.note, 'err');
     toast(a === 'approve' ? (r.copiedTo ? `Approved - STLs saved to ${r.copiedTo.split(/[\\/]/).slice(-2).join('\\')}` : 'Approved - ready to print') : a === 'reject' ? 'Rejected - edit and build again' : 'Moved back to review', a === 'approve' ? 'ok' : '');
     closeSheets(); renderQueue();
   } catch (e) { toast(e.message, 'err'); }

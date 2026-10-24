@@ -152,18 +152,25 @@ BAMBU_PATHS = [r'C:\Program Files\Bambu Studio\bambu-studio.exe',
                os.path.join(os.environ.get('LOCALAPPDATA', ''), 'Programs', 'Bambu Studio', 'bambu-studio.exe')]
 
 
+def _inside(path, root):
+    path, root = os.path.normcase(os.path.realpath(path)), os.path.normcase(os.path.realpath(root))
+    return path.startswith(root.rstrip(os.sep) + os.sep)
+
+
 def copy_approved_award(o, s):
-    """Copy the PLAQUE + TEXT STLs into <award_approved_folder>\\<job name>\\. Re-approving the same
-    order reuses its folder; another order with the same wording gets "<job name> (2)"."""
+    """Copy the PLAQUE + TEXT STLs into <award_approved_folder>\\<job name>\\, then delete Script A's
+    working copy in Downloads. Re-approving reuses the order's folder; another order with the same
+    wording gets "<job name> (2)". Returns (folder, note)."""
     import shutil
     r = o.get('result') or {}
     files = [(label, p) for label, p in r.get('stls') or [] if os.path.isfile(p)]
+    if len(files) < 2:   # already approved once: the Downloads copy is gone, the approved copy is the source
+        files = [(label, p) for label, p in r.get('approved_stls') or [] if os.path.isfile(p)]
     if len(files) < 2:
         raise FileNotFoundError('The PLAQUE and TEXT STLs for this order are missing - build it again before approving.')
-    root = s['award_approved_folder']
     folder = r.get('approved_folder')
     if not folder or not os.path.isdir(folder):
-        base = os.path.join(root, O.award_job_name(o.get('clean') or o['fields']))
+        base = os.path.join(s['award_approved_folder'], O.award_job_name(o.get('clean') or o['fields']))
         folder, n = base, 2
         while os.path.exists(folder):
             folder, n = '%s (%d)' % (base, n), n + 1
@@ -171,11 +178,34 @@ def copy_approved_award(o, s):
     copied = []
     for label, p in files:
         dst = os.path.join(folder, os.path.basename(p))
-        shutil.copy2(p, dst)
+        if os.path.normcase(os.path.realpath(p)) != os.path.normcase(os.path.realpath(dst)):
+            shutil.copy2(p, dst)
+        if not os.path.isfile(dst) or os.path.getsize(dst) != os.path.getsize(p):
+            raise IOError('Copy to %s did not complete - nothing was deleted.' % dst)
         copied.append((label, dst))
     r['approved_folder'], r['approved_stls'] = folder, copied
+
+    # Delete the Downloads working copy - only files inside Script A's own output folder.
+    work_root = award_text.CONFIG['out_root']
+    kept = []
+    for _, p in files:
+        if not os.path.isfile(p) or not _inside(p, work_root):
+            continue
+        try:
+            os.remove(p)
+        except OSError:
+            kept.append(os.path.basename(p))
+    for d in {os.path.dirname(p) for _, p in files}:
+        if _inside(d, work_root):
+            try:
+                os.rmdir(d)           # only succeeds when the job folder is now empty
+            except OSError:
+                pass
+    r['stls'] = [x for x in r.get('stls') or [] if os.path.isfile(x[1])]
+    r['stl_folder'] = folder
+    note = ('Could not delete %s from Downloads (open in another program?) - delete it by hand.' % ', '.join(kept)) if kept else None
     o['result'] = r
-    return folder
+    return folder, note
 
 
 def open_in_bambu(paths):
@@ -227,6 +257,7 @@ def build(oid, close_after):
     st.save(order); notify(order)
     adsk.doEvents()
 
+    prev_approved = (order.get('result') or {}).get('approved_folder')
     before = app.activeDocument
     buf = io.StringIO()
     try:
@@ -240,6 +271,8 @@ def build(oid, close_after):
             'warnings': warnings + [l for l in out.splitlines() if 'WARNING' in l.upper()],
             'stl_folder': stl_folder(out), 'stls': stl_files(out), 'screenshots': shots,
         }
+        if prev_approved:
+            order['result']['approved_folder'] = prev_approved   # re-approve overwrites the same folder
     except Exception as e:
         order['status'] = 'failed'
         order['result'] = {'error': str(e), 'output': buf.getvalue().strip(), 'notes': note,
@@ -334,16 +367,16 @@ def handle(action, data):
         return {'order': o}
     if action == 'setStatus':
         o = st.get(data['id'])
-        copied = None
+        copied = note = None
         if data['status'] == 'approved' and o['type'] == 'award':
-            copied = copy_approved_award(o, s)      # raises if it fails, so the order is not marked approved
+            copied, note = copy_approved_award(o, s)   # raises if the copy fails, so the order is not marked approved
         o['status'] = data['status']
         if data['status'] == 'approved' and o['type'] == 'birth' and o.get('overrides'):
             letter = (o['clean'].get('letter') or o['clean']['baby_name'][:1]).upper()
             s['letter_overrides'][letter] = o['overrides']
             save_settings(s)
         st.save(o)
-        return {'order': summary(o), 'copiedTo': copied}
+        return {'order': summary(o), 'copiedTo': copied, 'note': note}
     if action == 'delete':
         st.delete(data['id'])
         return {}

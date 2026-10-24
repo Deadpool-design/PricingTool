@@ -25,7 +25,9 @@ already open) and the Apex Orders panel opens on the right. The same panel is al
 - **Review** shows the screenshots, every WARNING line and the order details, plus a checklist. **Approve** stays
   disabled until every box is ticked.
 - **Approving an Oscar order** creates `C:\Users\Mina\Desktop\Apex Prints\Products\Sutherland\Oscar\<job name>\`
-  with the PLAQUE and TEXT STLs (same wording again gets `<job name> (2)`). After that, **Open STL folder** and
+  with the PLAQUE and TEXT STLs (same wording again gets `<job name> (2)`), then deletes Script A's working copy in
+  `Downloads\Apex Prints - Oscar\Plaque Jobs` (only that folder is ever touched; a file open in another program is
+  left and you get a note). Rebuilding an approved order and approving again overwrites the same folder. After that, **Open STL folder** and
   **Open both in Bambu Studio** use that folder. The folder can be changed in Settings.
 - When you approve a birth letter with layout overrides, the overrides are **saved for that letter**. The next
   letter-I order uses them automatically.
