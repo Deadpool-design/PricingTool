@@ -76,6 +76,7 @@ function collect() {
         lines: $$('[data-line]', f).map(i => i.value),
         job_name: f.elements.job_name.value,
         small_h_mm: f.elements.small_h_mm.value, name_h_mm: f.elements.name_h_mm.value,
+        preview_on_base: f.elements.preview_on_base.checked,
       },
     };
   }
@@ -355,6 +356,7 @@ async function editOrder(id) {
     $$('#form-award [data-line]').forEach((i, n) => i.value = lines[n] || '');
     const fa = $('#form-award');
     ['job_name', 'small_h_mm', 'name_h_mm'].forEach(k => fa.elements[k].value = f[k] ?? '');
+    fa.elements.preview_on_base.checked = !!f.preview_on_base;
   } else {
     const fb = $('#form-birth');
     ['baby_name', 'time', 'date', 'letter', 'letter_height_mm', 'letter_thickness_mm', 'min_overlap'].forEach(k => fb.elements[k].value = f[k] ?? '');
@@ -492,7 +494,7 @@ async function openDetail(id) {
 
   const f = order.clean || order.fields;
   const spec = order.type === 'award'
-    ? [['Lines', (f.lines || []).filter(Boolean).map(esc).join('<br>')], ['Name', esc((f.lines || []).filter(Boolean).slice(-1)[0] || '')], ['Job', esc(f.job_name || '—')]]
+    ? [['Lines', (f.lines || []).filter(Boolean).map(esc).join('<br>')], ['Name', esc((f.lines || []).filter(Boolean).slice(-1)[0] || '')], ['Job', esc(f.job_name || '—')], ['Base preview', f.preview_on_base ? 'Yes' : 'No']]
     : [['Name', esc(f.baby_name)], ['Time', esc(f.time)], ['Date', esc(f.date)],
        ['Weight', esc(f.weight_g ? f.weight_g + ' g' : f.weight)], ['Height', esc(f.height_cm ? f.height_cm + ' cm' : f.height)],
        ['Animal', esc(cap(f.animal || ''))], ['Colour', esc(cap(f.colour || ''))]];
@@ -510,12 +512,13 @@ async function openDetail(id) {
   html += `<div class="feedback" style="margin-bottom:10px">${
     (r.notes || []).map(m => `<div class="msg info"><b>ℹ</b><span>${esc(m)}</span></div>`).join('')}${
     (r.warnings || []).map(m => `<div class="msg warn"><b>!</b><span>${esc(m)}</span></div>`).join('')}</div>`;
-  const stls = r.stls || [];
+  const stls = r.approved_stls || r.stls || [];
   if (stls.length) {
     const hint = { PLAQUE: 'filament 1 · gold', TEXT: 'filament 2 · black' };
     html += `<section class="card files"><h3>Files <span class="hint">separate STLs, one per colour</span></h3>${
       stls.map(([label, p]) => `<div class="file"><span class="flabel">${esc(label)}</span><span class="fname" title="${esc(p)}">${
         esc(p.split(/[\\/]/).pop())}</span>${hint[label] ? `<span class="fhint">${hint[label]}</span>` : ''}</div>`).join('')}
+      ${r.approved_folder ? `<p class="saved small">Saved for printing in <b title="${esc(r.approved_folder)}">${esc(r.approved_folder)}</b></p>` : order.type === 'award' ? '<p class="muted small" style="margin:8px 0 0">Approve copies both files into your Sutherland\\Oscar folder.</p>' : ''}
       <button class="btn primary small" data-a="bambu" style="margin-top:10px;width:100%">Open both in Bambu Studio</button>
       ${order.type === 'award' ? '<p class="muted small" style="margin:8px 0 0">When Bambu asks, answer <b>Yes</b> to "load as a single object with multiple parts", then set PLAQUE and TEXT to different filaments. If they load as two objects: select both, right-click, Assemble.</p>' : ''}
     </section>`;
@@ -564,7 +567,7 @@ async function detailAction(a, order) {
     const status = { approve: 'approved', reject: 'rejected', reopen: 'review' }[a];
     const r = await call('setStatus', { id: order.id, status });
     upsert(r.order);
-    toast(a === 'approve' ? 'Approved - ready to print' : a === 'reject' ? 'Rejected - edit and build again' : 'Moved back to review', a === 'approve' ? 'ok' : '');
+    toast(a === 'approve' ? (r.copiedTo ? `Approved - STLs saved to ${r.copiedTo.split(/[\\/]/).slice(-2).join('\\')}` : 'Approved - ready to print') : a === 'reject' ? 'Rejected - edit and build again' : 'Moved back to review', a === 'approve' ? 'ok' : '');
     closeSheets(); renderQueue();
   } catch (e) { toast(e.message, 'err'); }
 }
@@ -575,6 +578,7 @@ function closeSheets() { $$('.sheet').forEach(s => s.hidden = true); state.detai
 function openSettings() {
   $('#s-script').value = state.boot.settings.birth_letter_script;
   $('#s-orders').value = state.boot.settings.orders_folder;
+  $('#s-approved').value = state.boot.settings.award_approved_folder || '';
   const d = state.boot.birthDefaults;
   const s = $('#s-status');
   s.className = 'note';
@@ -584,9 +588,9 @@ function openSettings() {
 
 async function saveSettings() {
   try {
-    const r = await call('saveSettings', { birth_letter_script: $('#s-script').value, orders_folder: $('#s-orders').value });
+    const r = await call('saveSettings', { birth_letter_script: $('#s-script').value, orders_folder: $('#s-orders').value, award_approved_folder: $('#s-approved').value });
     state.boot.birthDefaults = r.birthDefaults;
-    state.boot.settings = { birth_letter_script: $('#s-script').value.trim(), orders_folder: $('#s-orders').value.trim() };
+    state.boot.settings = { birth_letter_script: $('#s-script').value.trim(), orders_folder: $('#s-orders').value.trim(), award_approved_folder: $('#s-approved').value.trim() };
     buildOverrideRows();
     const list = await call('list');
     state.orders = list.orders; updateCounts();

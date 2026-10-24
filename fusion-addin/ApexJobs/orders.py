@@ -78,7 +78,8 @@ def validate_award(f):
         warnings.append('Punctuation prints as tiny islands - check them on the first print.')
     if lines and not errors.get('lines') and is_non_latin(*lines):
         warnings.append('Non-Latin letters: check the screenshots carefully.')
-    clean = {'lines': lines, 'job_name': str(f.get('job_name') or '').strip()}
+    clean = {'lines': lines, 'job_name': str(f.get('job_name') or '').strip(),
+             'preview_on_base': f.get('preview_on_base') in (True, 'true', 'True', 1, '1', 'on', 'yes')}
     for k, lo, hi in (('small_h_mm', 4.0, 6.5), ('name_h_mm', 4.0, 8.0)):
         v = f.get(k)
         if v in (None, ''):
@@ -90,6 +91,13 @@ def validate_award(f):
         else:
             clean[k] = n
     return clean, errors, warnings, info
+
+
+def award_job_name(f):
+    """Same job name Script A uses for its files."""
+    lines = [l for l in f.get('lines') or [] if str(l).strip()]
+    job = f.get('job_name') or ' - '.join(lines)
+    return re.sub(r'[<>:"/\\|?*]', '', job).strip()[:80] or 'Oscar award'
 
 
 # ----------------------------------------------------------------------------- birth
@@ -266,8 +274,10 @@ def title(order):
 def build_config(otype, f):
     """Validated fields -> the CONFIG keys each script expects."""
     if normalize_type(otype) == 'award':
-        # preview_on_base off: Script A only builds the plaque + letters, no base model (base is printed to stock)
-        cfg = {'lines': f['lines'], 'job_name': f.get('job_name', ''), 'preview_on_base': False}
+        # Script A only. The base is printed to stock; preview_on_base just mounts the plaque on a
+        # throwaway base copy for the customer screenshot (never exported). Off unless ticked.
+        cfg = {'lines': f['lines'], 'job_name': f.get('job_name', ''),
+               'preview_on_base': bool(f.get('preview_on_base', False))}
         for k in ('small_h_mm', 'name_h_mm'):
             if k in f:
                 cfg[k] = f[k]

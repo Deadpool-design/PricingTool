@@ -73,6 +73,7 @@
         <label for="a-job">Job name</label>
         <input id="a-job" name="job_name" placeholder="Blank = built from the lines">
       </div>
+      <label class="check big"><input type="checkbox" name="preview_on_base"><span><b>Show on the base</b> in the review screenshot, for the customer. The base is only a preview; it is never exported.</span></label>
     </section>
 
     <details class="card collapsible">
@@ -187,6 +188,7 @@
   <div class="sheet-body">
     <section class="card">
       <div class="field"><label>birth_letter.py</label><input id="s-script"></div>
+      <div class="field"><label>Approved Oscar STLs go to</label><input id="s-approved"><p class="muted small">Approve creates a folder here named after the job, with the PLAQUE and TEXT STLs.</p></div>
       <div class="field"><label>Orders folder</label><input id="s-orders"><p class="muted small">Every order is a JSON file here. Later, the Shopify agent drops new orders into this folder.</p></div>
       <p class="note" id="s-status"></p>
     </section>

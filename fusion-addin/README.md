@@ -6,7 +6,8 @@ already open) and the Apex Orders panel opens on the right. The same panel is al
 
 **New order**: choose **Oscar Award** or **Baby Birth Letter** and fill in the form.
 - **Oscar Award** runs **Script A only** from the **award-text** skill: the 50 x 34 mm plaque, no base (the base is
-  printed to stock; Script B is not in the app, and Script A's base preview is switched off). It saves two separate
+  printed to stock; Script B is not in the app). Tick **Show on the base** to mount the plaque on a preview copy of
+  the base for the customer screenshot; that copy is never exported. It saves two separate
   STLs, **PLAQUE** and **TEXT**, so Bambu Studio can give them different colours; the review screen has an
   **Open both in Bambu Studio** button. Type 1-3 lines;
   the **last line is the winner's name** and prints biggest. A live preview shows the plaque with the estimated name
@@ -23,6 +24,9 @@ already open) and the Apex Orders panel opens on the right. The same panel is al
   "Close each document after building" keeps a big batch from leaving 20 tabs open.
 - **Review** shows the screenshots, every WARNING line and the order details, plus a checklist. **Approve** stays
   disabled until every box is ticked.
+- **Approving an Oscar order** creates `C:\Users\Mina\Desktop\Apex Prints\Products\Sutherland\Oscar\<job name>\`
+  with the PLAQUE and TEXT STLs (same wording again gets `<job name> (2)`). After that, **Open STL folder** and
+  **Open both in Bambu Studio** use that folder. The folder can be changed in Settings.
 - When you approve a birth letter with layout overrides, the overrides are **saved for that letter**. The next
   letter-I order uses them automatically.
 

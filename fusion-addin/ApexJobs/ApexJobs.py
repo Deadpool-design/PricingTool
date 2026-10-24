@@ -15,6 +15,8 @@ SETTINGS_FILE = os.path.join(HERE, 'settings.json')
 DEFAULT_SETTINGS = {
     'birth_letter_script': r'C:\Users\Mina\Desktop\Apex Prints\Products\Letters\Scripts\birth_letter.py',
     'orders_folder': os.path.join(os.path.expanduser('~'), 'Documents', 'Apex Orders'),
+    # Approve copies the PLAQUE + TEXT STLs of an Oscar order into <this>\<job name>\
+    'award_approved_folder': r'C:\Users\Mina\Desktop\Apex Prints\Products\Sutherland\Oscar',
     'letter_overrides': {},     # letter -> {'LAYOUT': {...}, 'SIZE': {...}} saved on approve
 }
 
@@ -114,7 +116,10 @@ def _shot(path, orientation=None):
 def screenshots(order):
     d = store().media_dir(order['id'])
     V = adsk.core.ViewOrientations
-    if order['type'] == 'award':   # plaque lies flat, front face up (+Z): top view shows the text straight on
+    if order['type'] == 'award' and order['clean'].get('preview_on_base'):
+        # Script A leaves the camera on the plaque mounted on the base preview; the plaque faces -Y (front)
+        views = [('on-base', None), ('front', V.FrontViewOrientation)]
+    elif order['type'] == 'award':   # plaque lies flat, front face up (+Z): top view shows the text straight on
         views = [('top', V.TopViewOrientation), ('iso', V.IsoTopRightViewOrientation)]
     else:   # the script leaves a 3/4 front view - keep that one first
         views = [('three-quarter', None), ('front', V.FrontViewOrientation), ('back', V.BackViewOrientation)]
@@ -145,6 +150,32 @@ def stl_folder(output):
 BAMBU_PATHS = [r'C:\Program Files\Bambu Studio\bambu-studio.exe',
                r'C:\Program Files (x86)\Bambu Studio\bambu-studio.exe',
                os.path.join(os.environ.get('LOCALAPPDATA', ''), 'Programs', 'Bambu Studio', 'bambu-studio.exe')]
+
+
+def copy_approved_award(o, s):
+    """Copy the PLAQUE + TEXT STLs into <award_approved_folder>\\<job name>\\. Re-approving the same
+    order reuses its folder; another order with the same wording gets "<job name> (2)"."""
+    import shutil
+    r = o.get('result') or {}
+    files = [(label, p) for label, p in r.get('stls') or [] if os.path.isfile(p)]
+    if len(files) < 2:
+        raise FileNotFoundError('The PLAQUE and TEXT STLs for this order are missing - build it again before approving.')
+    root = s['award_approved_folder']
+    folder = r.get('approved_folder')
+    if not folder or not os.path.isdir(folder):
+        base = os.path.join(root, O.award_job_name(o.get('clean') or o['fields']))
+        folder, n = base, 2
+        while os.path.exists(folder):
+            folder, n = '%s (%d)' % (base, n), n + 1
+    os.makedirs(folder, exist_ok=True)
+    copied = []
+    for label, p in files:
+        dst = os.path.join(folder, os.path.basename(p))
+        shutil.copy2(p, dst)
+        copied.append((label, dst))
+    r['approved_folder'], r['approved_stls'] = folder, copied
+    o['result'] = r
+    return folder
 
 
 def open_in_bambu(paths):
@@ -262,7 +293,7 @@ def handle(action, data):
     s = load_settings()
     if action == 'init':
         bd = birth_defaults()
-        return {'settings': {k: s[k] for k in ('birth_letter_script', 'orders_folder')},
+        return {'settings': {k: s[k] for k in ('birth_letter_script', 'orders_folder', 'award_approved_folder')},
                 'animals': O.ANIMALS, 'colours': O.COLOURS, 'birthLimits': O.BIRTH_LIMITS,
                 'awardDefaults': O.AWARD_DEFAULTS, 'birthDefaults': bd,
                 'savedLetters': sorted(s['letter_overrides']),
@@ -303,25 +334,30 @@ def handle(action, data):
         return {'order': o}
     if action == 'setStatus':
         o = st.get(data['id'])
+        copied = None
+        if data['status'] == 'approved' and o['type'] == 'award':
+            copied = copy_approved_award(o, s)      # raises if it fails, so the order is not marked approved
         o['status'] = data['status']
         if data['status'] == 'approved' and o['type'] == 'birth' and o.get('overrides'):
             letter = (o['clean'].get('letter') or o['clean']['baby_name'][:1]).upper()
             s['letter_overrides'][letter] = o['overrides']
             save_settings(s)
         st.save(o)
-        return {'order': summary(o)}
+        return {'order': summary(o), 'copiedTo': copied}
     if action == 'delete':
         st.delete(data['id'])
         return {}
     if action == 'openFolder':
         o = st.get(data['id'])
-        folder = (o.get('result') or {}).get('stl_folder') or st.root
+        r = o.get('result') or {}
+        folder = r.get('approved_folder') or r.get('stl_folder') or st.root
         if os.path.isdir(folder) and hasattr(os, 'startfile'):
             os.startfile(folder)
         return {'folder': folder}
     if action == 'openBambu':
         o = st.get(data['id'])
-        files = [p for _, p in (o.get('result') or {}).get('stls') or [] if os.path.isfile(p)]
+        r = o.get('result') or {}
+        files = [p for _, p in r.get('approved_stls') or r.get('stls') or [] if os.path.isfile(p)]
         if not files:
             raise FileNotFoundError('The STL files for this order are missing - build it again.')
         if open_in_bambu(files):
@@ -331,7 +367,7 @@ def handle(action, data):
             os.startfile(folder)
         return {'opened': 'folder', 'folder': folder}
     if action == 'saveSettings':
-        for k in ('birth_letter_script', 'orders_folder'):
+        for k in ('birth_letter_script', 'orders_folder', 'award_approved_folder'):
             if data.get(k):
                 s[k] = data[k].strip()
         save_settings(s)
