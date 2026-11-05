@@ -77,6 +77,7 @@ function collect() {
         job_name: f.elements.job_name.value,
         small_h_mm: f.elements.small_h_mm.value, name_h_mm: f.elements.name_h_mm.value,
         preview_on_base: f.elements.preview_on_base.checked,
+        name_font_rule: f.elements.name_font_rule.value,
       },
     };
   }
@@ -140,39 +141,53 @@ function renderFeedback(r) {
 
 /* ---------------------------------------------------------------- previews */
 const measureCtx = document.createElement('canvas').getContext('2d');
-// award-text plaque rules (Script A): Fusion text height = capital height; lines fit 46 mm;
-// small lines Franklin Gothic Medium Cond 5.1 mm, the name (last line) Demi Cond up to 6.45 mm,
-// switching to Medium Cond below 6 mm; block fits 27 mm with 3.6 mm gaps; under 4 mm is refused.
-const PLAQUE = { w: 50, h: 34, maxLen: 46, gap: 3.6, vMargin: 3.5, minH: 4.0, nameMinH: 6.0, capRatio: 0.7 };
+// award-text plaque rules (Script A, Nov 2026): Fusion text height = capital height; lines fit 46 mm;
+// small lines Franklin Gothic Medium Cond 5.1 mm; the name (last line) by name_font_rule:
+//   auto: Demi Cond up to 6.45 mm, switching to Agency FB Bold (up to 7.5 mm) below 6 mm
+//   alt_always: Agency FB Bold; classic: Demi Cond, then Medium Cond.
+// The name stays >= 1.1x the other lines (they shrink, not below 4 mm); block fits 27 mm with 3.6 mm gaps.
+const PLAQUE = { w: 50, h: 34, maxLen: 46, gap: 3.6, vMargin: 3.5, minH: 4.0, nameMinH: 6.0, altMaxH: 7.5,
+                 altMinH: 6.2, nameRatio: 1.1, capRatio: 0.7 };
 const FONT_SMALL = '"Franklin Gothic Medium Cond", "Arial Narrow", sans-serif';
 const FONT_NAME = '"Franklin Gothic Demi Cond", "Arial Narrow", sans-serif';
+const FONT_ALT = '"Agency FB", "Arial Narrow", sans-serif';
+const FONT_LABEL = { [FONT_SMALL]: 'Medium Cond', [FONT_NAME]: 'Demi Cond', [FONT_ALT]: 'Agency FB Bold' };
 function textWidthMm(text, hMm, font, weight) {
   measureCtx.font = `${weight} 100px ${font}`;
   return measureCtx.measureText(text).width / 100 * (hMm / PLAQUE.capRatio);
 }
+const fitH = (s, hmax, font, weight) => { const w = textWidthMm(s, hmax, font, weight); return w <= PLAQUE.maxLen ? hmax : hmax * PLAQUE.maxLen / w; };
+const floor05 = x => Math.floor(x * 20) / 20;
+
+function pickNameFont(s, nameH, rule) {
+  if (rule !== 'alt_always') {
+    const h = fitH(s, nameH, FONT_NAME, 700);
+    if (h >= PLAQUE.nameMinH - 1e-9) return { font: FONT_NAME, weight: 700, h };
+    if (rule === 'classic') return { font: FONT_SMALL, weight: 500, h: fitH(s, nameH, FONT_SMALL, 500), switched: true };
+  }
+  return { font: FONT_ALT, weight: 700, h: fitH(s, PLAQUE.altMaxH, FONT_ALT, 700), switched: rule !== 'alt_always' };
+}
 
 // Same fit rule as award_text.py. Fusion measures the real glyphs, so this is an estimate.
-function plaqueFit(lines, smallH, nameH) {
+function plaqueFit(lines, smallH, nameH, rule) {
   const n = lines.length;
   const out = lines.map((s, i) => {
-    const isName = i === n - 1;
-    let font = isName ? FONT_NAME : FONT_SMALL, weight = isName ? 700 : 500;
-    const hmax = isName ? nameH : smallH;
-    for (let attempt = 0; attempt < 2; attempt++) {
-      const w = textWidthMm(s, hmax, font, weight);
-      let h = w <= PLAQUE.maxLen ? hmax : hmax * PLAQUE.maxLen / w;
-      if (isName && n > 1 && font === FONT_NAME && h < PLAQUE.nameMinH && attempt === 0) { font = FONT_SMALL; weight = 500; continue; }
-      return { text: s, h: Math.floor(h * 20) / 20, font, weight, light: isName && font === FONT_SMALL };
-    }
+    if (i === n - 1) { const p = pickNameFont(s, nameH, rule); return { text: s, ...p, h: floor05(p.h), name: true }; }
+    return { text: s, font: FONT_SMALL, weight: 500, h: floor05(fitH(s, smallH, FONT_SMALL, 500)) };
   });
+  let reduced = false;
+  if (n > 1) {
+    const cap = Math.max(floor05(out[n - 1].h / PLAQUE.nameRatio), PLAQUE.minH);
+    out.slice(0, -1).forEach(l => { if (l.h > cap + 1e-9) { l.h = cap; reduced = true; } });
+  }
   const usable = PLAQUE.h - 2 * PLAQUE.vMargin;
   let block = out.reduce((a, l) => a + l.h, 0) + PLAQUE.gap * (n - 1);
   if (block > usable) {
     const k = (usable - PLAQUE.gap * (n - 1)) / out.reduce((a, l) => a + l.h, 0);
-    out.forEach(l => { l.h = Math.floor(l.h * k * 20) / 20; });
+    out.forEach(l => { l.h = floor05(l.h * k); });
     block = out.reduce((a, l) => a + l.h, 0) + PLAQUE.gap * (n - 1);
   }
-  return { lines: out, block };
+  return { lines: out, block, reduced };
 }
 
 function renderPreview() {
@@ -184,21 +199,23 @@ function renderPreview() {
     inputs.forEach(i => {
       const isName = i === nameInput && filled.length > 1;
       const c = i.parentElement.querySelector('.counter');
-      const n = i.value.trim().length, fit = isName || filled.length === 1 ? 11 : 14;
+      const n = i.value.trim().length, nameLine = isName || filled.length === 1, fit = nameLine ? 11 : 14;
+      // a long name is handled by the Agency FB switch (auto / alt_always), so only flag it under 'classic'
+      const flag = nameLine ? f.elements.name_font_rule.value === 'classic' : true;
       c.textContent = n ? `${n}/${fit}` : '';
-      c.classList.toggle('over', n > fit);
+      c.classList.toggle('over', flag && n > fit);
       i.closest('.field').querySelector('.tag').hidden = !(i === nameInput);
     });
     const g = $('#plaque-text');
     const size = $('#plaque-size');
     const lines = filled.map(i => i.value.trim());
     if (!lines.length) {
-      g.innerHTML = `<text x="25" y="18.6" font-size="5" fill="rgba(0,0,0,.3)" style="font-family:${esc(FONT_NAME)}">Winner name</text>`;
+      g.innerHTML = `<text x="25" y="18.6" font-size="5" fill="rgba(0,0,0,.3)" style="font-family:${esc(FONT_NAME)};font-weight:700">Winner name</text>`;
       size.hidden = true;
       return;
     }
     const num = (el, d) => { const v = parseFloat(String(el.value).replace(',', '.')); return v > 0 ? v : d; };
-    const fit = plaqueFit(lines, num(f.elements.small_h_mm, 5.1), num(f.elements.name_h_mm, 6.45));
+    const fit = plaqueFit(lines, num(f.elements.small_h_mm, 5.1), num(f.elements.name_h_mm, 6.45), f.elements.name_font_rule.value);
     let y = PLAQUE.h / 2 - fit.block / 2;
     g.innerHTML = fit.lines.map(l => {
       y += l.h;
@@ -207,12 +224,15 @@ function renderPreview() {
       return t;
     }).join('');
     const minH = Math.min(...fit.lines.map(l => l.h));
-    const nameH = fit.lines[fit.lines.length - 1].h;
+    const nm = fit.lines[fit.lines.length - 1];
+    const smallHoles = nm.font === FONT_ALT && nm.h < PLAQUE.altMinH;
     size.hidden = false;
-    size.textContent = minH < PLAQUE.minH ? `≈ ${minH.toFixed(1)} mm · too small` : `≈ name ${nameH.toFixed(1)} mm`;
-    size.className = 'pill' + (minH < PLAQUE.minH ? ' err' : fit.lines.some(l => l.light) ? ' warn' : '');
+    size.textContent = minH < PLAQUE.minH ? `≈ ${minH.toFixed(1)} mm · too small` : `≈ name ${nm.h.toFixed(1)} mm · ${FONT_LABEL[nm.font]}`;
+    size.className = 'pill' + (minH < PLAQUE.minH ? ' err' : smallHoles || fit.reduced ? ' warn' : '');
     size.title = minH < PLAQUE.minH ? 'The build will refuse letters under 4 mm. Shorten a line or move a word.'
-      : fit.lines.some(l => l.light) ? 'The name shrinks under 6 mm, so it switches to the lighter font.' : '';
+      : smallHoles ? 'Agency FB under 6.2 mm: letter holes under 0.85 mm. Check the Bambu preview or split the name.'
+      : fit.reduced ? 'The name is so long that the lines above it shrink to keep it the biggest. Consider splitting the name.'
+      : nm.switched ? 'The name is too long for Demi Cond, so it switches to Agency FB Bold.' : '';
     return;
   }
   if (state.type === 'birth') {
@@ -357,6 +377,7 @@ async function editOrder(id) {
     const fa = $('#form-award');
     ['job_name', 'small_h_mm', 'name_h_mm'].forEach(k => fa.elements[k].value = f[k] ?? '');
     fa.elements.preview_on_base.checked = !!f.preview_on_base;
+    fa.elements.name_font_rule.value = ['auto', 'alt_always', 'classic'].includes(f.name_font_rule) ? f.name_font_rule : 'auto';
   } else {
     const fb = $('#form-birth');
     ['baby_name', 'time', 'date', 'letter', 'letter_height_mm', 'letter_thickness_mm', 'min_overlap'].forEach(k => fb.elements[k].value = f[k] ?? '');
@@ -494,7 +515,7 @@ async function openDetail(id) {
 
   const f = order.clean || order.fields;
   const spec = order.type === 'award'
-    ? [['Lines', (f.lines || []).filter(Boolean).map(esc).join('<br>')], ['Name', esc((f.lines || []).filter(Boolean).slice(-1)[0] || '')], ['Job', esc(f.job_name || '—')], ['Base preview', f.preview_on_base ? 'Yes' : 'No']]
+    ? [['Lines', (f.lines || []).filter(Boolean).map(esc).join('<br>')], ['Name', esc((f.lines || []).filter(Boolean).slice(-1)[0] || '')], ['Job', esc(f.job_name || '—')], ['Base preview', f.preview_on_base ? 'Yes' : 'No'], ['Name font', esc({ auto: 'Auto (Agency FB Bold if long)', alt_always: 'Agency FB Bold always', classic: 'Classic' }[f.name_font_rule || 'auto'] || f.name_font_rule)]]
     : [['Name', esc(f.baby_name)], ['Time', esc(f.time)], ['Date', esc(f.date)],
        ['Weight', esc(f.weight_g ? f.weight_g + ' g' : f.weight)], ['Height', esc(f.height_cm ? f.height_cm + ' cm' : f.height)],
        ['Animal', esc(cap(f.animal || ''))], ['Colour', esc(cap(f.colour || ''))]];

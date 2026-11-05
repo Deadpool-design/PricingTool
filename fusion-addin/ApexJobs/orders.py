@@ -41,9 +41,12 @@ def _num(v):
 
 # ----------------------------------------------------------------------------- award (Oscar plaque)
 # Rules from the award-text skill: 1-3 lines, the LAST line is the winner's name (printed biggest).
-# Lines fit a 46 mm width: ~14 characters at 5.1 mm (small lines), ~11 at 6.45 mm (name); longer lines
-# shrink, and the script refuses anything that would need letters under 4 mm.
+# Lines fit a 46 mm width: ~14 characters at 5.1 mm (small lines), ~11 at 6.45 mm in Demi Cond (name).
+# Name font rule (Nov 2026): 'auto' = Demi Cond, switching to Agency FB Bold (up to 7.5 mm) when the
+# name would drop under 6 mm; 'alt_always' = Agency FB Bold for every name; 'classic' = the old rule.
+# Wide letters (M, m, w, W) matter more than the count, so these are hints - the script decides.
 SMALL_FIT_CHARS, NAME_FIT_CHARS, MAX_CHARS = 14, 11, 18
+NAME_FONT_RULES = ('auto', 'alt_always', 'classic')
 RTL = re.compile('[\u0590-\u08ff\ufb1d-\ufdff\ufe70-\ufeff]')   # Hebrew / Arabic
 
 
@@ -64,22 +67,32 @@ def validate_award(f):
     if lines and RTL.search(''.join(lines)):
         errors['lines'] = ('Arabic / right-to-left text cannot be built here: Fusion reverses it and breaks the letter '
                            'joins. Use the manual Inkscape SVG route from the award-text skill.')
+    rule = str(f.get('name_font_rule') or 'auto').strip().lower()
+    if rule not in NAME_FONT_RULES:
+        errors['name_font_rule'] = 'Use auto, alt_always or classic.'
     for i, l in enumerate(lines):
-        is_name = i == len(lines) - 1 and len(lines) > 1
-        fit = NAME_FIT_CHARS if is_name else SMALL_FIT_CHARS
-        if len(l) > MAX_CHARS:
+        is_name = i == len(lines) - 1
+        if is_name:
+            if len(l) > 18:
+                warnings.append('"%s" is %d characters - even in Agency FB Bold the letter holes may close up. '
+                                'Consider splitting the name over two lines.' % (l, len(l)))
+            elif len(l) > NAME_FIT_CHARS and rule == 'auto':
+                info.append('Long name (%d characters): it will probably switch automatically to Agency FB Bold '
+                            'so it stays big and bold.' % len(l))
+            elif len(l) > NAME_FIT_CHARS and rule == 'classic':
+                warnings.append('Long name with the classic rule: it shrinks and may switch to the lighter Medium Cond.')
+        elif len(l) > MAX_CHARS:
             warnings.append('"%s" is %d characters - it will probably need letters under 4 mm and be refused. '
                             'Move a word to another line.' % (l, len(l)))
-        elif len(l) > fit:
-            warnings.append('"%s" is %d characters - it will shrink below the standard %s size.%s'
-                            % (l, len(l), '6.45 mm name' if is_name else '5.1 mm',
-                               ' Under 6 mm the name switches to the lighter font.' if is_name else ''))
+        elif len(l) > SMALL_FIT_CHARS:
+            warnings.append('"%s" is %d characters - it will shrink below the standard 5.1 mm.' % (l, len(l)))
     if any(c in ''.join(lines) for c in "'.,`"):
         warnings.append('Punctuation prints as tiny islands - check them on the first print.')
     if lines and not errors.get('lines') and is_non_latin(*lines):
         warnings.append('Non-Latin letters: check the screenshots carefully.')
     clean = {'lines': lines, 'job_name': str(f.get('job_name') or '').strip(),
-             'preview_on_base': f.get('preview_on_base') in (True, 'true', 'True', 1, '1', 'on', 'yes')}
+             'preview_on_base': f.get('preview_on_base') in (True, 'true', 'True', 1, '1', 'on', 'yes'),
+             'name_font_rule': rule if rule in NAME_FONT_RULES else 'auto'}
     for k, lo, hi in (('small_h_mm', 4.0, 6.5), ('name_h_mm', 4.0, 8.0)):
         v = f.get(k)
         if v in (None, ''):
@@ -277,7 +290,8 @@ def build_config(otype, f):
         # Script A only. The base is printed to stock; preview_on_base just mounts the plaque on a
         # throwaway base copy for the customer screenshot (never exported). Off unless ticked.
         cfg = {'lines': f['lines'], 'job_name': f.get('job_name', ''),
-               'preview_on_base': bool(f.get('preview_on_base', False))}
+               'preview_on_base': bool(f.get('preview_on_base', False)),
+               'name_font_rule': f.get('name_font_rule', 'auto')}
         for k in ('small_h_mm', 'name_h_mm'):
             if k in f:
                 cfg[k] = f[k]

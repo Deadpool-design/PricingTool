@@ -1,6 +1,7 @@
-# Oscar award plaque builder - Script A from the award-text skill (formerly arch-award-text).
-# Only change from the skill: run(_context) became build(overrides) so the add-in can pass
-# the panel's values without editing CONFIG. Keep it in sync when the skill's Script A changes.
+# Oscar award plaque builder - Script A from the award-text skill (Nov 2026: Agency FB long-name rule).
+# Only change from the skill: run(_context) became build(overrides) so the add-in can pass the
+# panel's values without editing CONFIG. The add-in overrides out_root with a staging folder; Approve
+# moves the files into Sutherland\Oscar. Keep this in sync when the skill's Script A changes.
 import adsk.core, adsk.fusion, os, struct, re, math
 
 # ======================= JOB CONFIG (edit per order) =======================
@@ -11,9 +12,21 @@ CONFIG = {
     'name_h_mm': 6.45,                    # max letter height of the last line; shrinks to fit the width
     'line_heights_mm': None,              # optional explicit list of max heights, one per line (overrides the two above)
     'small_font': 'Franklin Gothic Medium Cond', 'small_font_file': 'FRAMDCN.TTF',
+    # --- name font rule (last line), Nov 2026 ---
+    #   'auto'       : Franklin Gothic Demi Cond (bold). If the name is too long for it (< name_font_min_h_mm),
+    #                  switch to Agency FB Bold: it is narrower, so a long name stays big and bold.
+    #   'alt_always' : Agency FB Bold for every name (one look across a client's trophies).
+    #   'classic'    : Demi Cond, then small_font (the behaviour before Nov 2026).
+    #   Agency FB is never swapped for small_font: at the same width small_font comes out ~25% smaller
+    #   with the same letter-hole size. Below alt_name_min_h_mm the script warns instead (split the name).
+    'name_font_rule': 'auto',
     'name_font': 'Franklin Gothic Demi Cond', 'name_font_file': 'FRADMCN.TTF',
-    'name_font_min_h_mm': 6.0,            # if the name shrinks below this, it switches to small_font (Demi 'a' hole closes up)
-    # plaque (fits the recess of "Oscar Base v3 - 50x34 Plaque": 51 x 34.6 mm flat)
+    'name_font_min_h_mm': 6.0,            # Demi Cond below this: its 'a' hole closes up (< 1 mm)
+    'alt_name_font': 'Agency FB', 'alt_name_font_file': 'AGENCYB.TTF', 'alt_name_bold': True,
+    'alt_name_max_h_mm': 7.5,             # Agency FB may grow to this
+    'alt_name_min_h_mm': 6.2,             # Agency FB 'e' hole ~0.137 x letter height: below 6.2 mm it is < 0.85 mm -> NOTE to split the name
+    'name_min_ratio': 1.1,                # the name stays at least 10% taller than the other lines (they shrink, not below min_text_h_mm)
+    # plaque (fits the recess of "Oscar Base v6 - Plaque + Brand Mark": 51 x 34.6 mm flat)
     'plaque_w_mm': 50.0, 'plaque_h_mm': 34.0, 'plaque_t_mm': 2.0,
     'corner_r_mm': 1.5, 'front_chamfer_mm': 0.4,
     'text_mode': 'raised',                # 'raised' = letters stand proud: ONE colour change per plate. 'inlay' = flush (ragged on X2D, Oct 2026)
@@ -24,7 +37,7 @@ CONFIG = {
     'print_face_down': False,             # False = front face up (proven). True = STLs exported front-down (untested)
     'preview_on_base': True,              # adds a non-exported base copy and mounts the plaque on it for the screenshot
     'plaque_color_note': 'gold', 'text_color_note': 'black',
-    'out_root': os.path.join(os.path.expanduser('~'), 'Downloads', 'Apex Prints - Oscar', 'Plaque Jobs'),
+    'out_root': r'C:\Users\Mina\Desktop\Apex Prints\Products\Sutherland\Oscar',   # one sub-folder per order is created here
 }
 # ===========================================================================
 
@@ -82,6 +95,76 @@ def _stl(path, bodies, name, face_down, t_mm):
     return len(tris)
 
 
+def _make(ts, T, s, h, font, bold, xc, yc):
+    def S(x, y):
+        return ts.modelToSketchSpace(P3(x * CM, y * CM, T * CM))
+    ti = ts.sketchTexts.createInput2(s, h * CM)
+    ti.setAsMultiLine(S(xc - 150, yc - h * 1.5), S(xc + 150, yc + h * 1.5),   # wide box: a long line must never wrap
+                      adsk.core.HorizontalAlignments.CenterHorizontalAlignment,
+                      adsk.core.VerticalAlignments.MiddleVerticalAlignment, 0)
+    ti.fontName = font
+    if bold:
+        ti.textStyle = adsk.fusion.TextStyles.TextStyleBold
+    return ts.sketchTexts.add(ti)
+
+
+def _bbox(t):
+    xs = []; ys = []
+    for c in t.asCurves():
+        ev = c.evaluator
+        ok, p0, p1 = ev.getParameterExtents()
+        ok, pts = ev.getStrokes(p0, p1, 0.0005)
+        for p in pts:
+            xs.append(p.x / CM); ys.append(p.y / CM)
+    return min(xs), max(xs), min(ys), max(ys)
+
+
+def _fit_h(ts, T, s, hmax, font, bold, max_len):
+    t = _make(ts, T, s, hmax, font, bold, 0, 0)
+    bx = _bbox(t); t.deleteMe()
+    if bx[3] - bx[2] > 2.0 * hmax:
+        raise RuntimeError('"%s" wrapped onto two lines in the text box. Split it into two plaque lines instead.' % s)
+    w = bx[1] - bx[0]
+    return hmax if w <= max_len else hmax * max_len / w
+
+
+def _label(font, bold):
+    return font + (' Bold' if bold else '')
+
+
+def _pick_name_font(ts, T, s, cfg, hmax_override=None):
+    """Font for the name line. Returns (font, bold, height_mm, note)."""
+    L = cfg['max_line_len_mm']
+    rule = cfg.get('name_font_rule', 'auto')
+    demi = (cfg['name_font'], False, hmax_override or cfg['name_h_mm'], cfg['name_font_min_h_mm'])
+    alt = (cfg['alt_name_font'], bool(cfg['alt_name_bold']), hmax_override or cfg['alt_name_max_h_mm'], cfg['alt_name_min_h_mm'])
+    notes = []
+    alt_ok = rule != 'classic' and _font_ok(cfg['alt_name_font_file'])
+    if rule != 'classic' and not alt_ok:
+        notes.append('NOTE: %s (%s) is not installed, so the name uses the classic rule.' % (cfg['alt_name_font'], cfg['alt_name_font_file']))
+    tried = None
+    if rule != 'alt_always' or not alt_ok:
+        font, bold, hmx, hmin = demi
+        h = _fit_h(ts, T, s, hmx, font, bold, L)
+        if h >= hmin - 1e-9:
+            return font, bold, h, ' '.join(notes)
+        tried = (font, h, hmin)
+    if alt_ok:
+        font, bold, hmx, hmin = alt
+        h = _fit_h(ts, T, s, hmx, font, bold, L)
+        if tried:
+            notes.append('NOTE: the name is too long for %s (%.2f mm < %.1f), so it switched to %s at %.2f mm.'
+                         % (tried[0], tried[1], tried[2], _label(font, bold), h))
+        if h < hmin - 1e-9:
+            notes.append('NOTE: at %.2f mm the Agency FB letter holes are only about %.2f mm. Check the "e"/"a" holes in the '
+                         'Bambu preview, or split the name over two lines.' % (h, 0.137 * h))
+        return font, bold, h, ' '.join(notes)
+    font = cfg['small_font']                      # classic rule (or Agency FB missing)
+    h = _fit_h(ts, T, s, hmax_override or cfg['name_h_mm'], font, False, L)
+    notes.append('NOTE: the name is too long for %s (%.2f mm < %.1f), so it uses %s at %.2f mm.' % (tried[0], tried[1], tried[2], font, h))
+    return font, False, h, ' '.join(notes)
+
+
 def build(overrides=None):
     """Run one plaque job. overrides: dict of CONFIG keys to change for this job only."""
     cfg = dict(CONFIG)
@@ -100,9 +183,12 @@ def build(overrides=None):
         hmax = list(cfg['line_heights_mm'])
         if len(hmax) != n:
             raise ValueError('line_heights_mm needs %d values' % n)
+        name_override = hmax[-1]
     else:
         hmax = [cfg['small_h_mm']] * (n - 1) + [cfg['name_h_mm']]
-    fonts = [cfg['small_font']] * (n - 1) + [cfg['name_font']]
+        name_override = None
+    fonts = [cfg['small_font']] * n
+    bolds = [False] * n
 
     # --- new Z-up document (never touch Mina's open designs)
     app = adsk.core.Application.get()
@@ -158,40 +244,26 @@ def build(overrides=None):
     cp = comp.constructionPlanes.add(cpi); cp.name = 'Plaque front'; cp.isLightBulbOn = False
     ts = comp.sketches.add(cp); ts.name = 'Plaque text'
 
-    def S(x, y):
-        return ts.modelToSketchSpace(P3(x * CM, y * CM, T * CM))
+    def make(s, h, font, bold, xc, yc):
+        return _make(ts, T, s, h, font, bold, xc, yc)
 
-    def make(s, h, font, xc, yc):
-        ti = ts.sketchTexts.createInput2(s, h * CM)
-        ti.setAsMultiLine(S(xc - 40, yc - h * 1.5), S(xc + 40, yc + h * 1.5),
-                          adsk.core.HorizontalAlignments.CenterHorizontalAlignment,
-                          adsk.core.VerticalAlignments.MiddleVerticalAlignment, 0)
-        ti.fontName = font
-        return ts.sketchTexts.add(ti)
+    bbox = _bbox
 
-    def bbox(t):
-        xs = []; ys = []
-        for c in t.asCurves():
-            ev = c.evaluator
-            ok, p0, p1 = ev.getParameterExtents()
-            ok, pts = ev.getStrokes(p0, p1, 0.0005)
-            for p in pts:
-                xs.append(p.x / CM); ys.append(p.y / CM)
-        return min(xs), max(xs), min(ys), max(ys)
-
-    # fit each line to the width; the name falls back to the lighter font when it has to shrink a lot
+    # fit each line to the width; the name font follows name_font_rule (auto: Demi Cond, or Agency FB Bold if too long)
     hs = []
+    name_note = ''
     for i, s in enumerate(lines):
-        for attempt in range(2):
-            t = make(s, hmax[i], fonts[i], 0, 0)
-            bx = bbox(t); t.deleteMe()
-            w = bx[1] - bx[0]
-            h = hmax[i] if w <= cfg['max_line_len_mm'] else hmax[i] * cfg['max_line_len_mm'] / w
-            if i == n - 1 and n > 1 and fonts[i] != cfg['small_font'] and h < cfg['name_font_min_h_mm'] and attempt == 0:
-                fonts[i] = cfg['small_font']
-                continue
-            break
+        if i == n - 1:
+            fonts[i], bolds[i], h, name_note = _pick_name_font(ts, T, s, cfg, name_override)
+        else:
+            h = _fit_h(ts, T, s, hmax[i], fonts[i], False, cfg['max_line_len_mm'])
         hs.append(math.floor(h * 20) / 20.0)
+    # the name stays the biggest line: shrink the lines above it if needed
+    if n > 1:
+        cap = max(math.floor(hs[-1] / cfg['name_min_ratio'] * 20) / 20.0, cfg['min_text_h_mm'])
+        if any(x > cap + 1e-9 for x in hs[:-1]):
+            hs = [min(x, cap) for x in hs[:-1]] + [hs[-1]]
+            name_note = (name_note + ' NOTE: the line(s) above the name were reduced to %.2f mm so the name stays the biggest line.' % cap).strip()
     # fit the block to the plaque height
     usable = H - 2 * cfg['v_margin_mm']
     block = sum(hs) + cfg['line_gap_mm'] * (n - 1)
@@ -204,24 +276,24 @@ def build(overrides=None):
                          % (min(hs), cfg['min_text_h_mm']))
     # baseline offset of each font (baseline = text box centre + k*h)
     kf = {}
-    for fnt in set(fonts):
-        pr = make('H', 10.0, fnt, 0, 0)
-        kf[fnt] = bbox(pr)[2] / 10.0
+    for key in set(zip(fonts, bolds)):
+        pr = make('H', 10.0, key[0], key[1], 0, 0)
+        kf[key] = bbox(pr)[2] / 10.0
         pr.deleteMe()
     captop = block / 2.0
     info = []
     for i, s in enumerate(lines):
         h = hs[i]
         yb = captop - h
-        yc = yb - kf[fonts[i]] * h
-        t = make(s, h, fonts[i], 0, yc)
+        yc = yb - kf[(fonts[i], bolds[i])] * h
+        t = make(s, h, fonts[i], bolds[i], 0, yc)
         bx = bbox(t)
         dx = -(bx[0] + bx[1]) / 2.0
         if abs(dx) > 0.02:
             t.deleteMe()
-            t = make(s, h, fonts[i], dx, yc)
+            t = make(s, h, fonts[i], bolds[i], dx, yc)
             bx = bbox(t)
-        info.append({'text': s, 'font': fonts[i], 'h': h, 'w': bx[1] - bx[0]})
+        info.append({'text': s, 'font': _label(fonts[i], bolds[i]), 'h': h, 'w': bx[1] - bx[0]})
         captop = yb - cfg['line_gap_mm']
     ts.isVisible = False
 
@@ -264,7 +336,7 @@ def build(overrides=None):
         raise RuntimeError('Unhealthy features: %s' % bad)
 
     # --- export two STLs (component coordinates, before any preview transform)
-    folder = os.path.join(cfg['out_root'], job + (' (raised text)' if raised else ' (inlay)'))
+    folder = os.path.join(cfg['out_root'], job if raised else job + ' (inlay)')   # one folder per order
     os.makedirs(folder, exist_ok=True)
     pp = os.path.join(folder, job + ' - PLAQUE.stl')
     pt = os.path.join(folder, job + ' - TEXT.stl')
@@ -326,6 +398,13 @@ def build(overrides=None):
         cam.eye = P3(-6, -30, 6.0); cam.target = P3(0, 0, 3.6); cam.upVector = adsk.core.Vector3D.create(0, 0, 1)
         cam.isSmoothTransition = False; cam.isFitView = True
         vp.camera = cam
+    preview = os.path.join(folder, job + ' - preview.png')     # customer-approval picture, saved with the STLs
+    try:
+        app.activeViewport.refresh()
+        if not app.activeViewport.saveAsImageFile(preview, 1200, 1000):
+            preview = 'not saved'
+    except Exception as e:
+        preview = 'not saved (%s)' % e
 
     # --- report
     vp_ = plaque.volume * 1000; vt = sum(b.volume for b in letters) * 1000
@@ -337,11 +416,13 @@ def build(overrides=None):
         print('Line %d "%s": %s %.2f mm, width %.1f mm, smallest letter hole %s'
               % (i + 1, d['text'], d['font'], d['h'], d['w'], ('%.2f mm' % d['min_hole']) if d['min_hole'] is not None else 'none'))
         if d['min_hole'] is not None and d['min_hole'] < cfg['min_counter_mm']:
-            print('WARNING: line %d has a letter hole of %.2f mm (< %.1f). It will likely fill in (blob). '
-                  'Use the lighter font, bigger letters or capitals for this line.' % (i + 1, d['min_hole'], cfg['min_counter_mm']))
-    if fonts[-1] != cfg['name_font']:
-        print('NOTE: the name had to shrink below %.1f mm, so it uses %s instead of %s.' % (cfg['name_font_min_h_mm'], fonts[-1], cfg['name_font']))
+            print('WARNING: line %d has a letter hole of %.2f mm (< %.2f). It will likely fill in (blob). '
+                  'Check it in the Bambu preview; if it closes, put fewer words on this line (split the name).' % (i + 1, d['min_hole'], cfg['min_counter_mm']))
+    print('Name font rule: %s' % cfg.get('name_font_rule', 'auto'))
+    if name_note:
+        print(name_note)
     print('Letter bodies: %d' % len(letters))
     print('Volume: plaque %.0f mm3 (~%.2f g), text %.0f mm3 (~%.2f g) at 1.24 g/cm3' % (vp_, vp_ * 0.00124, vt, vt * 0.00124))
     print('PLAQUE STL:', pp)
     print('TEXT STL:', pt)
+    print('PREVIEW:', preview)

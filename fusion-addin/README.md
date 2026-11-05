@@ -10,8 +10,11 @@ already open) and the Apex Orders panel opens on the right. The same panel is al
   the base for the customer screenshot; that copy is never exported. It saves two separate
   STLs, **PLAQUE** and **TEXT**, so Bambu Studio can give them different colours; the review screen has an
   **Open both in Bambu Studio** button. Type 1-3 lines;
-  the **last line is the winner's name** and prints biggest. A live preview shows the plaque with the estimated name
-  size (amber when the name switches to the lighter font, red when the build would refuse letters under 4 mm).
+  the **last line is the winner's name** and prints biggest. **Long names** follow the skill's Nov 2026 rule: Franklin
+  Gothic Demi Cond, switching automatically to **Agency FB Bold** (up to 7.5 mm) when the name would drop under 6 mm;
+  the lines above shrink if needed so the name stays the biggest. Advanced > Name font can force Agency FB Bold for
+  every name (one look per client) or use the classic rule. A live preview shows the plaque, the name size and font
+  (amber when holes may be small or lines were reduced, red when the build would refuse letters under 4 mm).
   Arabic and other right-to-left text is blocked, because Fusion reverses it; use the skill's manual Inkscape route.
 - **Baby Birth Letter** (birth-letter skill) takes the name, time, date, weight, height, colour and animal. It spells
   the date out ("1 December 2021") so day and month can't get swapped. Use **Layout overrides** to move or resize
@@ -25,7 +28,8 @@ already open) and the Apex Orders panel opens on the right. The same panel is al
 - **Review** shows the screenshots, every WARNING line and the order details, plus a checklist. **Approve** stays
   disabled until every box is ticked.
 - **Approving an Oscar order** creates `C:\Users\Mina\Desktop\Apex Prints\Products\Sutherland\Oscar\<job name>\`
-  with the PLAQUE and TEXT STLs (same wording again gets `<job name> (2)`), then deletes Script A's working copy in
+  with the PLAQUE and TEXT STLs and the customer `preview.png` (same wording again gets `<job name> (2)`), then deletes the
+  staging copy in
   `Downloads\Apex Prints - Oscar\Plaque Jobs` (only that folder is ever touched; a file open in another program is
   left and you get a note). Rebuilding an approved order and approving again overwrites the same folder. After that, **Open STL folder** and
   **Open both in Bambu Studio** use that folder. The folder can be changed in Settings.

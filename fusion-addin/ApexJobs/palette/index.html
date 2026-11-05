@@ -82,6 +82,14 @@
         <div class="field" data-field="small_h_mm"><label>Small lines mm</label><input name="small_h_mm" inputmode="decimal" placeholder="5.1"></div>
         <div class="field" data-field="name_h_mm"><label>Name max mm</label><input name="name_h_mm" inputmode="decimal" placeholder="6.45"></div>
       </div>
+      <div class="field" data-field="name_font_rule" style="margin-top:10px">
+        <label>Name font</label>
+        <select name="name_font_rule">
+          <option value="auto" selected>Auto: Demi Cond, Agency FB Bold if the name is long</option>
+          <option value="alt_always">Agency FB Bold always (one look for a client)</option>
+          <option value="classic">Classic: Demi Cond, then Medium Cond</option>
+        </select>
+      </div>
     </details>
   </form>
 

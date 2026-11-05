@@ -25,14 +25,19 @@ CMD_ID = 'ApexOrdersCmd'
 PALETTE_ID = 'ApexOrdersPalette'
 RUN_EVENT_ID = 'ApexJobsRunEvent'
 OPEN_EVENT_ID = 'ApexJobsOpenPanelEvent'
+# Oscar builds land here first (Script A's out_root is overridden); Approve moves the order's
+# PLAQUE + TEXT STLs and preview.png into award_approved_folder (Sutherland\Oscar) and deletes them here.
+# Only files inside this folder are ever deleted.
+AWARD_WORK_ROOT = os.path.join(os.path.expanduser('~'), 'Downloads', 'Apex Prints - Oscar', 'Plaque Jobs')
 # The desktop shortcut (tools/open-apex-orders.ps1) drops this file to ask for the panel.
 OPEN_FLAG = os.path.join(HERE, 'open-panel.flag')
 
 CHECKS = {
-    'award': ['Spelling matches the order exactly (customer approves from the screenshot)',
+    'award': ['Spelling matches the order exactly (customer approves from the preview)',
               'Every line reads correctly and nothing touches the plaque edge',
-              'No WARNING about a letter hole under 0.95 mm (or it was fixed)',
-              'Name is on the LAST line, biggest'],
+              'Letter holes: no WARNING, or holes 0.85-0.95 mm checked in the Bambu sliced preview '
+              '(under 0.85 mm: split the name over two lines)',
+              'Name is on the LAST line, biggest, in the font the NOTE says (Demi Cond or Agency FB Bold)'],
     'birth': ['Name read LETTER BY LETTER against the order (no dropped letters)',
               'Time, date, weight and height match the order',
               'Logo on the back reads left-to-right',
@@ -124,6 +129,13 @@ def screenshots(order):
     else:   # the script leaves a 3/4 front view - keep that one first
         views = [('three-quarter', None), ('front', V.FrontViewOrientation), ('back', V.BackViewOrientation)]
     out = []
+    if order.get('_preview_png'):   # Script A's own customer preview comes first
+        import shutil
+        try:
+            shutil.copy2(order['_preview_png'], os.path.join(d, 'preview.png'))
+            out.append('preview.png')
+        except OSError:
+            pass
     for name, ori in views:
         try:
             out.append(_shot(os.path.join(d, name + '.png'), ori))
@@ -140,6 +152,15 @@ def stl_files(output):
         if m:
             out.append((m.group(1).strip().upper(), m.group(2)))
     return out
+
+
+def preview_file(output):
+    """Script A's customer preview: 'PREVIEW: <path>' ('not saved ...' when it failed)."""
+    for line in output.splitlines():
+        m = re.match(r'^\s*PREVIEW:\s*(.+?\.png)\s*$', line, re.I)
+        if m and os.path.isfile(m.group(1)):
+            return m.group(1)
+    return None
 
 
 def stl_folder(output):
@@ -175,6 +196,9 @@ def copy_approved_award(o, s):
         while os.path.exists(folder):
             folder, n = '%s (%d)' % (base, n), n + 1
     os.makedirs(folder, exist_ok=True)
+    pv = r.get('preview_png')
+    if pv and os.path.isfile(pv):
+        files = files + [('PREVIEW', pv)]
     copied = []
     for label, p in files:
         dst = os.path.join(folder, os.path.basename(p))
@@ -183,10 +207,12 @@ def copy_approved_award(o, s):
         if not os.path.isfile(dst) or os.path.getsize(dst) != os.path.getsize(p):
             raise IOError('Copy to %s did not complete - nothing was deleted.' % dst)
         copied.append((label, dst))
-    r['approved_folder'], r['approved_stls'] = folder, copied
+    r['approved_folder'] = folder
+    r['approved_stls'] = [c for c in copied if c[0] != 'PREVIEW']
+    r['preview_png'] = next((c[1] for c in copied if c[0] == 'PREVIEW'), r.get('preview_png'))
 
     # Delete the Downloads working copy - only files inside Script A's own output folder.
-    work_root = award_text.CONFIG['out_root']
+    work_root = AWARD_WORK_ROOT
     kept = []
     for _, p in files:
         if not os.path.isfile(p) or not _inside(p, work_root):
@@ -220,6 +246,7 @@ def open_in_bambu(paths):
 def run_order(order):
     cfg = O.build_config(order['type'], order['clean'])
     if order['type'] == 'award':
+        cfg['out_root'] = AWARD_WORK_ROOT     # staging; Approve moves the files into Sutherland\Oscar
         award_text.build(cfg)
         return
     g = load_birth_script(load_settings()['birth_letter_script'])
@@ -264,16 +291,20 @@ def build(oid, close_after):
         with contextlib.redirect_stdout(buf):
             run_order(order)
         out = buf.getvalue().strip()
+        order['_preview_png'] = preview_file(out)
         shots = screenshots(order)
         order['status'] = 'review'
         order['result'] = {
-            'output': out, 'notes': note,
+            'output': out,
+            'notes': note + [l.strip() for l in out.splitlines() if l.strip().upper().startswith('NOTE')],
             'warnings': warnings + [l for l in out.splitlines() if 'WARNING' in l.upper()],
             'stl_folder': stl_folder(out), 'stls': stl_files(out), 'screenshots': shots,
+            'preview_png': order.pop('_preview_png'),
         }
         if prev_approved:
             order['result']['approved_folder'] = prev_approved   # re-approve overwrites the same folder
     except Exception as e:
+        order.pop('_preview_png', None)
         order['status'] = 'failed'
         order['result'] = {'error': str(e), 'output': buf.getvalue().strip(), 'notes': note,
                            'trace': traceback.format_exc()}

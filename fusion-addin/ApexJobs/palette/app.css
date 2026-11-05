@@ -289,3 +289,5 @@ pre.log { background: #1f1e1c; color: #e8e4dc; border-radius: 8px; padding: 10px
 .check.big { align-items: flex-start; margin-top: 12px; font-size: 12px; color: var(--ink); line-height: 1.4; }
 .check.big input { margin-top: 2px; }
 .files .saved { margin: 10px 0 0; padding: 8px 10px; border-radius: 8px; background: var(--ok-soft); color: var(--ok); word-break: break-all; }
+select { width: 100%; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-2); font: inherit; color: inherit; }
+select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }

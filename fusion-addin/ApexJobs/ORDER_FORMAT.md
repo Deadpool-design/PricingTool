@@ -29,7 +29,8 @@ Rules for anything that writes orders:
 1-3 lines, top to bottom. The **last line is the winner's name** and prints biggest. Lines fit 46 mm:
 about 14 characters for the small lines, about 11 for the name. Longer lines shrink, and a build that needs
 letters under 4 mm is refused. Arabic or other right-to-left text is refused (it needs the manual Inkscape route).
-Optional fields: `small_h_mm` (4-6.5, default 5.1), `name_h_mm` (4-8, default 6.45).
+Optional fields: `small_h_mm` (4-6.5, default 5.1), `name_h_mm` (4-8, default 6.45), `name_font_rule`
+(`auto` default: Agency FB Bold when the name is too long for Demi Cond; `alt_always`; `classic`), `preview_on_base` (true/false).
 Older files with `"type": "arch"` are read as `award`.
 
 ## Baby Birth Letter
